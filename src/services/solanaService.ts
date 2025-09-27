@@ -13,7 +13,7 @@ import {
 import { AnchorProvider, Program, Idl } from '@coral-xyz/anchor';
 import crypto from 'crypto';
 import { logger } from '../utils/logger';
-import { ModelData, SubscriptionData, RoyaltyDistribution } from '../types';
+import { ModelData, SubscriptionData, RoyaltyDistribution, LineageInfo, LineageTrace } from '../types';
 
 export class SolanaService {
   private connection: Connection;
@@ -43,13 +43,18 @@ export class SolanaService {
     return Buffer.concat([len, data]);
   }
 
-  // 테스트용 키페어 초기화
+  // 프로덕션 환경에서는 테스트 키페어 사용 금지
   private initializeTestKeypair() {
+    if (process.env.NODE_ENV === 'production') {
+      logger.info('Production environment detected - test keypair disabled');
+      return;
+    }
+    
     try {
       if (process.env.TEST_PRIVATE_KEY) {
         const privateKeyBytes = Buffer.from(process.env.TEST_PRIVATE_KEY, 'base64');
         this.testKeypair = Keypair.fromSecretKey(privateKeyBytes);
-        logger.info('Test keypair initialized:', { 
+        logger.info('Test keypair initialized for development:', { 
           publicKey: this.testKeypair.publicKey.toString() 
         });
       } else {
@@ -60,8 +65,12 @@ export class SolanaService {
     }
   }
 
-  // 테스트용 키페어 가져오기
+  // 테스트용 키페어 가져오기 (개발 환경에서만)
   getTestKeypair(): Keypair {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Test keypair is not available in production environment. Use client-signed transactions instead.');
+    }
+    
     if (!this.testKeypair) {
       throw new Error('Test keypair not initialized. Please set TEST_PRIVATE_KEY in environment variables.');
     }
@@ -144,12 +153,19 @@ export class SolanaService {
         Buffer.from([modelData.isAllowed ? 1 : 0])
       ]);
 
+      const keys = [
+        { pubkey: modelAccountPDA, isSigner: false, isWritable: true },
+        { pubkey: modelData.developerWallet, isSigner: true, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+      ] as { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[];
+
+      // 부모 모델 PDA가 제공된 경우, 참조 계정으로 포함 (읽기 전용)
+      if (modelData.parentModelPubkey) {
+        keys.push({ pubkey: modelData.parentModelPubkey, isSigner: false, isWritable: false });
+      }
+
       const createModelInstruction = new TransactionInstruction({
-        keys: [
-          { pubkey: modelAccountPDA, isSigner: false, isWritable: true },
-          { pubkey: modelData.developerWallet, isSigner: true, isWritable: true },
-          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-        ],
+        keys,
         programId: this.programId,
         data: instructionData
       });
@@ -170,7 +186,7 @@ export class SolanaService {
     }
   }
 
-  // 구독 구매 트랜잭션 생성
+  // 구독 구매 트랜잭션 생성 (계보 기반 로열티 분배)
   async createSubscriptionTransaction(
     subscriptionData: SubscriptionData,
     userKeypair: Keypair
@@ -207,12 +223,59 @@ export class SolanaService {
 
       transaction.add(purchaseSubscriptionInstruction);
 
-      logger.info('Subscription purchase transaction created:', {
+      // 계보 추적 및 로열티 분배 계산
+      const lineageTrace = await this.traceLineage(subscriptionData.modelPubkey);
+      const platformFeeBps = subscriptionData.platformFeeBps ?? parseInt(process.env.PLATFORM_FEE_BPS || '500');
+      const minRoyaltyLamports = subscriptionData.minRoyaltyLamports ?? parseInt(process.env.MIN_ROYALTY_LAMPORTS || '1000');
+      
+      const royaltyDistribution = this.calculateLineageRoyaltyDistribution(
+        subscriptionData.expectedPriceLamports,
+        lineageTrace,
+        platformFeeBps,
+        minRoyaltyLamports
+      );
+
+      // 플랫폼 수수료 전송
+      const platformWalletEnv = process.env.PLATFORM_FEE_WALLET;
+      const platformWallet = subscriptionData.platformFeeWallet || (platformWalletEnv ? new PublicKey(platformWalletEnv) : undefined);
+      
+      if (platformWallet && royaltyDistribution.platformAmount > 0) {
+        transaction.add(SystemProgram.transfer({
+          fromPubkey: subscriptionData.userWallet,
+          toPubkey: platformWallet,
+          lamports: royaltyDistribution.platformAmount
+        }));
+      }
+
+      // 계보 기반 로열티 전송 (부모부터 시작)
+      for (const lineageRoyalty of royaltyDistribution.lineageRoyalties) {
+        transaction.add(SystemProgram.transfer({
+          fromPubkey: subscriptionData.userWallet,
+          toPubkey: lineageRoyalty.developerWallet,
+          lamports: lineageRoyalty.amount
+        }));
+      }
+
+      // 메인 개발자 수익 전송
+      if (subscriptionData.modelDeveloperWallet && royaltyDistribution.developerAmount > 0) {
+        transaction.add(SystemProgram.transfer({
+          fromPubkey: subscriptionData.userWallet,
+          toPubkey: subscriptionData.modelDeveloperWallet,
+          lamports: royaltyDistribution.developerAmount
+        }));
+      }
+
+      logger.info('Subscription purchase transaction created with lineage-based royalties:', {
         modelPubkey: subscriptionData.modelPubkey.toString(),
         userWallet: subscriptionData.userWallet.toString(),
         durationDays: subscriptionData.durationDays,
-        instructionDataLength: instructionData.length,
-        discriminator: Array.from(purchaseSubscriptionDiscriminator).map(b => '0x' + b.toString(16).padStart(2, '0')).join(', ')
+        lineageDepth: lineageTrace.totalDepth,
+        lineageValid: lineageTrace.isValid,
+        platformAmount: royaltyDistribution.platformAmount,
+        lineageRoyaltiesCount: royaltyDistribution.lineageRoyalties.length,
+        totalLineageAmount: royaltyDistribution.totalLineageAmount,
+        developerAmount: royaltyDistribution.developerAmount,
+        instructionDataLength: instructionData.length
       });
 
       return transaction;
@@ -222,7 +285,181 @@ export class SolanaService {
     }
   }
 
-  // 로열티 분배 계산
+  // 모델 계정 데이터 디코딩 (Borsh 형식)
+  private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
+    try {
+      // 실제 온체인 프로그램의 데이터 레이아웃에 맞춰 수정 필요
+      // 여기서는 예시 구조를 사용
+      let offset = 0;
+      
+      // discriminator (8 bytes) 건너뛰기
+      offset += 8;
+      
+      // model_id (string)
+      const modelIdLength = accountData.readUInt32LE(offset);
+      offset += 4;
+      const modelId = accountData.subarray(offset, offset + modelIdLength).toString('utf8');
+      offset += modelIdLength;
+      
+      // model_name (string)
+      const modelNameLength = accountData.readUInt32LE(offset);
+      offset += 4;
+      const modelName = accountData.subarray(offset, offset + modelNameLength).toString('utf8');
+      offset += modelNameLength;
+      
+      // developer_wallet (32 bytes)
+      const developerWallet = new PublicKey(accountData.subarray(offset, offset + 32));
+      offset += 32;
+      
+      // royalty_bps (2 bytes)
+      const royaltyBps = accountData.readUInt16LE(offset);
+      offset += 2;
+      
+      // depth (2 bytes)
+      const depth = accountData.readUInt16LE(offset);
+      offset += 2;
+      
+      // parent_model (Option<Pubkey> - 1 byte + 32 bytes if Some)
+      const hasParent = accountData.readUInt8(offset) === 1;
+      offset += 1;
+      let parentPDA: PublicKey | undefined;
+      if (hasParent) {
+        parentPDA = new PublicKey(accountData.subarray(offset, offset + 32));
+      }
+      
+      return {
+        modelPDA: new PublicKey(''), // 실제 PDA는 호출자에서 설정
+        developerWallet,
+        modelId,
+        modelName,
+        royaltyBps,
+        depth,
+        parentPDA
+      };
+    } catch (error) {
+      logger.error('Failed to decode model account data:', error);
+      return null;
+    }
+  }
+
+  // 계보 추적 (루트까지)
+  async traceLineage(modelPDA: PublicKey, maxDepth: number = 32): Promise<LineageTrace> {
+    const lineage: LineageInfo[] = [];
+    const violations: string[] = [];
+    let currentPDA = modelPDA;
+    let depth = 0;
+
+    try {
+      while (currentPDA && depth < maxDepth) {
+        // 모델 계정 정보 조회
+        const accountInfo = await this.getAccountInfo(currentPDA);
+        if (!accountInfo || !accountInfo.data) {
+          violations.push(`Model account not found: ${currentPDA.toString()}`);
+          break;
+        }
+
+        // 계정 데이터 디코딩
+        const lineageInfo = this.decodeModelAccountData(accountInfo.data);
+        if (!lineageInfo) {
+          violations.push(`Failed to decode model account: ${currentPDA.toString()}`);
+          break;
+        }
+
+        // PDA 설정
+        lineageInfo.modelPDA = currentPDA;
+        lineage.push(lineageInfo);
+
+        // 부모 모델로 이동
+        if (lineageInfo.parentPDA) {
+          currentPDA = lineageInfo.parentPDA;
+          depth++;
+        } else {
+          // 루트 모델에 도달
+          break;
+        }
+      }
+
+      // 깊이 검증
+      if (depth >= maxDepth) {
+        violations.push(`Maximum lineage depth exceeded: ${depth}`);
+      }
+
+      // 순환 참조 검증
+      const pdaSet = new Set(lineage.map(l => l.modelPDA.toString()));
+      if (pdaSet.size !== lineage.length) {
+        violations.push('Circular reference detected in lineage');
+      }
+
+      return {
+        lineage,
+        totalDepth: depth,
+        isValid: violations.length === 0,
+        violations: violations.length > 0 ? violations : undefined
+      };
+    } catch (error) {
+      logger.error('Failed to trace lineage:', error);
+      return {
+        lineage,
+        totalDepth: depth,
+        isValid: false,
+        violations: [`Lineage tracing failed: ${error instanceof Error ? error.message : 'Unknown error'}`]
+      };
+    }
+  }
+
+  // 계보 기반 로열티 분배 계산
+  calculateLineageRoyaltyDistribution(
+    totalLamports: number,
+    lineageTrace: LineageTrace,
+    platformFeeBps: number = parseInt(process.env.PLATFORM_FEE_BPS || '500'),
+    minRoyaltyLamports: number = parseInt(process.env.MIN_ROYALTY_LAMPORTS || '1000')
+  ): RoyaltyDistribution {
+    const platformAmount = Math.floor(totalLamports * platformFeeBps / 10000);
+    let remainingAmount = totalLamports - platformAmount;
+    const lineageRoyalties: RoyaltyDistribution['lineageRoyalties'] = [];
+    let totalLineageAmount = 0;
+
+    // 계보를 따라 로열티 계산 (부모부터 시작)
+    for (let i = lineageTrace.lineage.length - 1; i >= 0; i--) {
+      const lineageInfo = lineageTrace.lineage[i];
+      const royaltyAmount = Math.floor(totalLamports * lineageInfo.royaltyBps / 10000);
+      
+      // 최소 단위 이하면 중단
+      if (royaltyAmount < minRoyaltyLamports) {
+        logger.info(`Stopping lineage royalty at depth ${i}: amount ${royaltyAmount} < min ${minRoyaltyLamports}`);
+        break;
+      }
+
+      // 잔액 부족하면 중단
+      if (royaltyAmount > remainingAmount) {
+        logger.info(`Stopping lineage royalty at depth ${i}: insufficient remaining amount`);
+        break;
+      }
+
+      lineageRoyalties.push({
+        modelPDA: lineageInfo.modelPDA,
+        developerWallet: lineageInfo.developerWallet,
+        modelName: lineageInfo.modelName,
+        depth: lineageInfo.depth,
+        amount: royaltyAmount,
+        royaltyBps: lineageInfo.royaltyBps
+      });
+
+      totalLineageAmount += royaltyAmount;
+      remainingAmount -= royaltyAmount;
+    }
+
+    return {
+      totalLamports,
+      platformAmount,
+      developerAmount: remainingAmount,
+      lineageRoyalties,
+      totalLineageAmount,
+      remainingAmount
+    };
+  }
+
+  // 기존 로열티 분배 계산 (하위 호환성)
   calculateRoyaltyDistribution(
     totalLamports: number,
     royaltyBps: number
@@ -236,9 +473,10 @@ export class SolanaService {
     return {
       totalLamports,
       platformAmount,
-      royaltyAmount,
       developerAmount,
-      parentDeveloperAmount: royaltyAmount
+      lineageRoyalties: [],
+      totalLineageAmount: royaltyAmount,
+      remainingAmount: developerAmount
     };
   }
 

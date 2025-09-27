@@ -17,14 +17,21 @@ export interface ModelData {
 export interface SubscriptionData {
   userWallet: PublicKey;
   modelPubkey: PublicKey;
+  modelDeveloperWallet: PublicKey; // destination for developer share
   durationDays: number;
   expectedPriceLamports: number;
   slippageBps: number;
+  royaltyBps?: number; // overrides model default if provided
+  platformFeeBps?: number; // overrides env default if provided
+  platformFeeWallet?: PublicKey; // destination for platform fee
+  minRoyaltyLamports?: number; // stop cascading when below this
+  ancestorDeveloperWallets?: PublicKey[]; // ordered from immediate parent up
+  baseRoyaltyBps?: number; // cascade step rate (default 50 = 0.5%)
 }
 
 // 트랜잭션 관련 타입
 export interface TransactionRequest {
-  type: 'register_model' | 'purchase_subscription' | 'update_model_metadata' | 'verify_lineage';
+  type: 'prepare_register_model_unsigned' | 'prepare_purchase_subscription_unsigned' | 'register_model' | 'purchase_subscription' | 'update_model_metadata' | 'verify_lineage';
   data: any;
   userSignature?: string;
   developerSignature?: string;
@@ -51,13 +58,40 @@ export interface SolanaAccountInfo {
   };
 }
 
-// 로열티 분배 타입
+// 계보 정보 타입
+export interface LineageInfo {
+  modelPDA: PublicKey;
+  developerWallet: PublicKey;
+  modelId: string;
+  modelName: string;
+  royaltyBps: number;
+  depth: number;
+  parentPDA?: PublicKey;
+}
+
+// 계보 추적 결과 타입
+export interface LineageTrace {
+  lineage: LineageInfo[];
+  totalDepth: number;
+  isValid: boolean;
+  violations?: string[];
+}
+
+// 로열티 분배 타입 (계보 기반)
 export interface RoyaltyDistribution {
   totalLamports: number;
   platformAmount: number;
-  royaltyAmount: number;
   developerAmount: number;
-  parentDeveloperAmount?: number;
+  lineageRoyalties: {
+    modelPDA: PublicKey;
+    developerWallet: PublicKey;
+    modelName: string;
+    depth: number;
+    amount: number;
+    royaltyBps: number;
+  }[];
+  totalLineageAmount: number;
+  remainingAmount: number;
 }
 
 // 에러 타입

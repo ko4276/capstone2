@@ -181,7 +181,7 @@ router.post('/pda', async (req: Request, res: Response) => {
   }
 });
 
-// 로열티 분배 계산
+// 로열티 분배 계산 (기존 방식)
 router.post('/royalty-calculation', async (req: Request, res: Response) => {
   try {
     const { totalLamports, royaltyBps } = req.body;
@@ -212,6 +212,126 @@ router.post('/royalty-calculation', async (req: Request, res: Response) => {
     res.json(response);
   } catch (error) {
     logger.error('Failed to calculate royalty distribution:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// 계보 기반 로열티 분배 계산
+router.post('/lineage-royalty-calculation', async (req: Request, res: Response) => {
+  try {
+    const { modelPubkey, totalLamports, maxDepth, platformFeeBps, minRoyaltyLamports } = req.body;
+
+    if (!modelPubkey || totalLamports === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'Model pubkey and total lamports are required'
+      });
+    }
+
+    // 계보 추적
+    const modelPDA = new (await import('@solana/web3.js')).PublicKey(modelPubkey);
+    const lineageTrace = await solanaService.traceLineage(modelPDA, maxDepth || 32);
+
+    if (!lineageTrace.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid lineage detected',
+        data: {
+          violations: lineageTrace.violations
+        }
+      });
+    }
+
+    // 계보 기반 로열티 분배 계산
+    const distribution = solanaService.calculateLineageRoyaltyDistribution(
+      parseInt(totalLamports),
+      lineageTrace,
+      platformFeeBps || parseInt(process.env.PLATFORM_FEE_BPS || '500'),
+      minRoyaltyLamports || parseInt(process.env.MIN_ROYALTY_LAMPORTS || '1000')
+    );
+
+    const response: ApiResponse = {
+      success: true,
+      data: {
+        input: {
+          modelPubkey,
+          totalLamports: parseInt(totalLamports),
+          maxDepth: maxDepth || 32,
+          platformFeeBps: platformFeeBps || parseInt(process.env.PLATFORM_FEE_BPS || '500'),
+          minRoyaltyLamports: minRoyaltyLamports || parseInt(process.env.MIN_ROYALTY_LAMPORTS || '1000')
+        },
+        lineageTrace: {
+          totalDepth: lineageTrace.totalDepth,
+          isValid: lineageTrace.isValid,
+          lineage: lineageTrace.lineage.map(l => ({
+            modelPDA: l.modelPDA.toString(),
+            modelId: l.modelId,
+            modelName: l.modelName,
+            developerWallet: l.developerWallet.toString(),
+            royaltyBps: l.royaltyBps,
+            depth: l.depth,
+            parentPDA: l.parentPDA?.toString()
+          }))
+        },
+        distribution
+      }
+    };
+
+    res.json(response);
+  } catch (error) {
+    logger.error('Failed to calculate lineage-based royalty distribution:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// 계보 추적
+router.post('/trace-lineage', async (req: Request, res: Response) => {
+  try {
+    const { modelPubkey, maxDepth } = req.body;
+
+    if (!modelPubkey) {
+      return res.status(400).json({
+        success: false,
+        error: 'Model pubkey is required'
+      });
+    }
+
+    const modelPDA = new (await import('@solana/web3.js')).PublicKey(modelPubkey);
+    const lineageTrace = await solanaService.traceLineage(modelPDA, maxDepth || 32);
+
+    const response: ApiResponse = {
+      success: true,
+      data: {
+        input: {
+          modelPubkey,
+          maxDepth: maxDepth || 32
+        },
+        lineageTrace: {
+          totalDepth: lineageTrace.totalDepth,
+          isValid: lineageTrace.isValid,
+          violations: lineageTrace.violations,
+          lineage: lineageTrace.lineage.map(l => ({
+            modelPDA: l.modelPDA.toString(),
+            modelId: l.modelId,
+            modelName: l.modelName,
+            developerWallet: l.developerWallet.toString(),
+            royaltyBps: l.royaltyBps,
+            depth: l.depth,
+            parentPDA: l.parentPDA?.toString()
+          }))
+        }
+      }
+    };
+
+    res.json(response);
+  } catch (error) {
+    logger.error('Failed to trace lineage:', error);
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Internal server error'
