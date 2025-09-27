@@ -22,7 +22,7 @@
 - **새 파일**: `env.production` (프로덕션용 환경 변수)
 - **주요 변경사항**:
   - `NODE_ENV=production`
-  - `SOLANA_RPC_URL=https://api.mainnet-beta.solana.com`
+  - `SOLANA_RPC_URL=https://api.devnet.solana.com`
   - `PORT=8080` (Cloud Run 표준 포트)
 
 ## 🔧 추가된 배포 파일
@@ -71,8 +71,8 @@ if (process.env.NODE_ENV === 'production') {
 
 ### 필수 환경 변수 설정
 - [ ] `NODE_ENV=production`
-- [ ] `SOLANA_RPC_URL=https://api.mainnet-beta.solana.com`
-- [ ] `PROGRAM_ID=YOUR_MAINNET_PROGRAM_ID`
+- [ ] `SOLANA_RPC_URL=https://api.devnet.solana.com`
+- [ ] `PROGRAM_ID=GUrLuMj8yCB2T4NKaJSVqrAWWCMPMf1qtBSnDR8ytYwB` (데브넷 프로그램 ID)
 - [ ] `PLATFORM_FEE_WALLET=YOUR_PLATFORM_WALLET`
 - [ ] `FRONTEND_URL=https://your-frontend-domain.com`
 - [ ] `JWT_SECRET=YOUR_SECURE_JWT_SECRET`
@@ -136,11 +136,12 @@ curl -X POST https://your-service-url/api/transactions/register-model \
 
 ## ⚠️ 주의사항
 
-1. **메인넷 프로그램 ID**: 실제 배포된 프로그램 ID로 변경 필요
+1. **데브넷 프로그램 ID**: 현재 기본값 사용 (GUrLuMj8yCB2T4NKaJSVqrAWWCMPMf1qtBSnDR8ytYwB)
 2. **플랫폼 지갑**: 실제 플랫폼 수수료 수령 지갑 주소 설정
 3. **도메인 설정**: 실제 프론트엔드 도메인으로 CORS 설정
 4. **JWT 시크릿**: 강력한 시크릿 키 생성 및 Secret Manager 사용 권장
 5. **모니터링**: Cloud Logging 및 Cloud Monitoring 설정
+6. **데브넷 SOL**: 테스트용 SOL이 필요하므로 데브넷 에어드롭 사용
 
 ---
 

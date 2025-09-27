@@ -22,7 +22,7 @@ gcloud services enable containerregistry.googleapis.com
 cp env.production .env
 
 # 실제 값으로 수정
-# - PROGRAM_ID: 메인넷 프로그램 ID
+# - PROGRAM_ID: 데브넷 프로그램 ID (기본값: GUrLuMj8yCB2T4NKaJSVqrAWWCMPMf1qtBSnDR8ytYwB)
 # - PLATFORM_FEE_WALLET: 플랫폼 수수료 지갑 주소
 # - FRONTEND_URL: 실제 프론트엔드 도메인
 # - JWT_SECRET: 안전한 JWT 시크릿
@@ -68,8 +68,8 @@ gcloud run services update solana-backend \
   --set-env-vars \
     NODE_ENV=production,\
     PORT=8080,\
-    SOLANA_RPC_URL=https://api.mainnet-beta.solana.com,\
-    PROGRAM_ID=YOUR_MAINNET_PROGRAM_ID,\
+    SOLANA_RPC_URL=https://api.devnet.solana.com,\
+    PROGRAM_ID=GUrLuMj8yCB2T4NKaJSVqrAWWCMPMf1qtBSnDR8ytYwB,\
     PLATFORM_FEE_WALLET=YOUR_PLATFORM_WALLET,\
     FRONTEND_URL=https://your-frontend-domain.com,\
     JWT_SECRET=YOUR_SECURE_JWT_SECRET
