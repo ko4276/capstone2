@@ -19,6 +19,7 @@ export class SolanaService {
   private connection: Connection;
   private programId: PublicKey;
   private testKeypair: Keypair | null = null;
+  private treasuryKeypair: Keypair | null = null;
 
   constructor() {
     this.connection = new Connection(
@@ -27,6 +28,7 @@ export class SolanaService {
     );
     this.programId = new PublicKey(process.env.PROGRAM_ID || 'GUrLuMj8yCB2T4NKaJSVqrAWWCMPMf1qtBSnDR8ytYwB');
     this.initializeTestKeypair();
+    this.initializeTreasuryKeypair();
   }
 
   // Anchor discriminator 계산 (sha256("global:<method>")의 첫 8바이트)
@@ -77,6 +79,68 @@ export class SolanaService {
       throw new Error('Test keypair not initialized. Please set TEST_PRIVATE_KEY in environment variables.');
     }
     return this.testKeypair;
+  }
+
+  // 서버 트레저리 키페어 초기화 (개발/테스트/데브넷 용도)
+  private initializeTreasuryKeypair() {
+    try {
+      // 1) 파일 경로 우선: TREASURY_KEYPAIR_PATH (JSON 배열 형식, solana-keygen 기본 형식)
+      const keypairPath = process.env.TREASURY_KEYPAIR_PATH;
+      if (keypairPath) {
+        const fs = require('fs');
+        const path = require('path');
+        const resolved = path.isAbsolute(keypairPath) ? keypairPath : path.resolve(process.cwd(), keypairPath);
+        const raw = fs.readFileSync(resolved, 'utf-8');
+        const json = JSON.parse(raw);
+        if (!Array.isArray(json)) throw new Error('Invalid keypair file format: expected JSON array');
+        const secret = Uint8Array.from(json);
+        this.treasuryKeypair = Keypair.fromSecretKey(secret);
+        logger.info('Treasury keypair initialized from file path', { publicKey: this.treasuryKeypair.publicKey.toString(), path: resolved });
+        return;
+      }
+
+      const base58 = process.env.TREASURY_PRIVATE_KEY;
+      const base64 = process.env.TREASURY_PRIVATE_KEY_BASE64;
+      if (base58) {
+        const secret = Buffer.from(require('bs58').decode(base58));
+        this.treasuryKeypair = Keypair.fromSecretKey(secret);
+        logger.info('Treasury keypair initialized from base58', { publicKey: this.treasuryKeypair.publicKey.toString() });
+        return;
+      }
+      if (base64) {
+        const secret = Buffer.from(base64, 'base64');
+        this.treasuryKeypair = Keypair.fromSecretKey(secret);
+        logger.info('Treasury keypair initialized from base64', { publicKey: this.treasuryKeypair.publicKey.toString() });
+        return;
+      }
+      // 2) 암시적 기본: ./treasury.json 가 있으면 사용
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const fallback = path.resolve(process.cwd(), 'treasury.json');
+        if (fs.existsSync(fallback)) {
+          const raw = fs.readFileSync(fallback, 'utf-8');
+          const json = JSON.parse(raw);
+          if (Array.isArray(json)) {
+            const secret = Uint8Array.from(json);
+            this.treasuryKeypair = Keypair.fromSecretKey(secret);
+            logger.info('Treasury keypair initialized from default ./treasury.json', { publicKey: this.treasuryKeypair.publicKey.toString(), path: fallback });
+            return;
+          }
+        }
+      } catch {}
+
+      logger.warn('TREASURY key not configured; treasury-based settlements disabled');
+    } catch (error) {
+      logger.error('Failed to initialize treasury keypair:', error);
+    }
+  }
+
+  getTreasuryKeypair(): Keypair {
+    if (!this.treasuryKeypair) {
+      throw new Error('Treasury keypair not initialized. Set TREASURY_PRIVATE_KEY or TREASURY_PRIVATE_KEY_BASE64');
+    }
+    return this.treasuryKeypair;
   }
 
   // 모델 계정 PDA 생성
@@ -477,6 +541,40 @@ export class SolanaService {
       totalLineageAmount,
       remainingAmount
     };
+  }
+
+  // 트레저리에서 계보 및 개발자에게 분배 전송 (플랫폼 몫은 트레저리에 잔류)
+  async distributeFromTreasury(
+    totalLamports: number,
+    modelPDA: PublicKey,
+    developerWallet: PublicKey,
+    options?: { platformFeeBps?: number; minRoyaltyLamports?: number; commitment?: Commitment }
+  ): Promise<{ signature: string; distribution: ReturnType<SolanaService['calculateLineageRoyaltyDistribution']> }> {
+    const treasury = this.getTreasuryKeypair();
+    // 계보 추적 및 분배 계산
+    const lineageTrace = await this.traceLineage(modelPDA);
+    const platformFeeBps = options?.platformFeeBps ?? parseInt(process.env.PLATFORM_FEE_BPS || '500');
+    const minRoyaltyLamports = options?.minRoyaltyLamports ?? parseInt(process.env.MIN_ROYALTY_LAMPORTS || '1000');
+    const distribution = this.calculateLineageRoyaltyDistribution(totalLamports, lineageTrace, platformFeeBps, minRoyaltyLamports);
+
+    // 트랜잭션 구성: 트레저리 -> 각 수취인 전송 (플랫폼 몫은 남김)
+    const tx = new Transaction();
+
+    for (const lr of distribution.lineageRoyalties) {
+      if (lr.amount > 0) {
+        tx.add(SystemProgram.transfer({ fromPubkey: treasury.publicKey, toPubkey: lr.developerWallet, lamports: lr.amount }));
+      }
+    }
+    if (distribution.developerAmount > 0) {
+      tx.add(SystemProgram.transfer({ fromPubkey: treasury.publicKey, toPubkey: developerWallet, lamports: distribution.developerAmount }));
+    }
+
+    const recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+    tx.recentBlockhash = recentBlockhash;
+    tx.feePayer = treasury.publicKey;
+
+    const signature = await this.sendTransaction(tx, [treasury]);
+    return { signature, distribution };
   }
 
   // 기존 로열티 분배 계산 (하위 호환성)
