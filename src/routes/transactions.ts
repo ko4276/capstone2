@@ -206,7 +206,39 @@ router.get('/status/:signature', async (req: Request, res: Response) => {
 
 export default router;
 
-// raw 트랜잭션 전송
+// 외부 백엔드에서 서명된 트랜잭션을 받아서 온체인으로 전송
+router.post('/broadcast-signed', async (req: Request, res: Response) => {
+  try {
+    const { transactionBase64, options } = req.body || {};
+
+    if (!transactionBase64 || typeof transactionBase64 !== 'string') {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'transactionBase64 is required' 
+      });
+    }
+
+    logger.info('Broadcasting signed transaction from external backend');
+
+    const result = await transactionService.broadcastSignedTransaction(transactionBase64, options);
+    
+    if (result.success) {
+      logger.info('Successfully broadcasted signed transaction:', { 
+        transactionHash: result.transactionHash 
+      });
+    }
+
+    res.json(result);
+  } catch (error) {
+    logger.error('Failed to broadcast signed transaction:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Internal server error' 
+    });
+  }
+});
+
+// raw 트랜잭션 전송 (기존 호환성 유지)
 router.post('/send-raw', async (req: Request, res: Response) => {
   try {
     const { transactionBase64, options } = req.body || {};

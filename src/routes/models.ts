@@ -103,7 +103,14 @@ router.post('/register', async (req: Request, res: Response) => {
           priceLamports: modelData.priceLamports,
           royaltyBps: modelData.royaltyBps,
           developerWallet: modelData.developerWallet,
-          isAllowed: modelData.isAllowed || true
+          isAllowed: modelData.isAllowed ?? true,
+          // Optional metadata aligned with api_json_v0.3.json
+          uploader: modelData.uploader,
+          versionName: modelData.versionName,
+          modality: modelData.modality,
+          thumbnail: modelData.thumbnail,
+          pricing: modelData.pricing,
+          metrics: modelData.metrics
         }
       }
     };

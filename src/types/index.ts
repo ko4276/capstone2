@@ -1,10 +1,34 @@
 import { PublicKey } from '@solana/web3.js';
 
 // 모델 관련 타입
+export interface ModelPricingTier {
+  price: number;
+  description: string;
+  billingType: string; // e.g., 'free' | 'monthly_subscription' | 'one_time_purchase'
+  // Optional limits per modality/tier
+  monthlyTokenLimit?: number;       // LLM
+  monthlyGenerationLimit?: number;  // image-generation
+  monthlyRequestLimit?: number;     // multimodal
+}
+
+export interface ModelPricing {
+  research?: ModelPricingTier;
+  standard?: ModelPricingTier;
+  enterprise?: ModelPricingTier;
+}
+
+export type ModelMetrics = Record<string, number>; // flexible to fit different modalities
+
 export interface ModelData {
   modelId: string;
   modelName: string;
+  uploader: string;
+  versionName: string;
+  modality: string; // e.g., 'LLM' | 'image-generation' | 'multimodal' | 'audio'
   ipfsCid: string;
+  pricing?: ModelPricing;
+  metrics?: ModelMetrics;
+  thumbnail?: string;
   priceLamports: number;
   royaltyBps: number;
   parentModelPubkey?: PublicKey;

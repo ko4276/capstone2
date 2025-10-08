@@ -287,51 +287,69 @@ export class SolanaService {
     }
   }
 
-  // 모델 계정 데이터 디코딩 (Borsh 형식)
+  // 모델 계정 데이터 디코딩 (Anchor/Borsh) - lib.rs의 ModelAccount 레이아웃과 일치
   private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
     try {
-      // 실제 온체인 프로그램의 데이터 레이아웃에 맞춰 수정 필요
-      // 여기서는 예시 구조를 사용
       let offset = 0;
-      
-      // discriminator (8 bytes) 건너뛰기
+
+      // discriminator (8 bytes)
       offset += 8;
-      
-      // model_id (string)
+
+      // model_id: String
       const modelIdLength = accountData.readUInt32LE(offset);
       offset += 4;
       const modelId = accountData.subarray(offset, offset + modelIdLength).toString('utf8');
       offset += modelIdLength;
-      
-      // model_name (string)
+
+      // creator: Pubkey (LineageInfo의 developerWallet로 매핑)
+      const creator = new PublicKey(accountData.subarray(offset, offset + 32));
+      offset += 32;
+
+      // model_name: String
       const modelNameLength = accountData.readUInt32LE(offset);
       offset += 4;
       const modelName = accountData.subarray(offset, offset + modelNameLength).toString('utf8');
       offset += modelNameLength;
-      
-      // developer_wallet (32 bytes)
-      const developerWallet = new PublicKey(accountData.subarray(offset, offset + 32));
-      offset += 32;
-      
-      // royalty_bps (2 bytes)
+
+      // ipfs_cid: String
+      const ipfsCidLength = accountData.readUInt32LE(offset);
+      offset += 4;
+      // 읽기만 하고 현재 반환 구조에는 포함하지 않음
+      offset += ipfsCidLength;
+
+      // royalty_bps: u16
       const royaltyBps = accountData.readUInt16LE(offset);
       offset += 2;
-      
-      // depth (2 bytes)
-      const depth = accountData.readUInt16LE(offset);
-      offset += 2;
-      
-      // parent_model (Option<Pubkey> - 1 byte + 32 bytes if Some)
-      const hasParent = accountData.readUInt8(offset) === 1;
+
+      // created_at: i64
+      // Anchor는 little-endian i64, Node Buffer에는 직접 메서드 없으므로 readBigInt64LE 사용 가능
+      // 하지만 여기서는 오프셋만 이동
+      offset += 8;
+
+      // is_active: bool (u8)
+      const _isActive = accountData.readUInt8(offset) === 1;
+      offset += 1;
+
+      // parent_model_pubkey: Option<Pubkey> (1 byte tag + 32 if Some)
+      const parentTag = accountData.readUInt8(offset);
       offset += 1;
       let parentPDA: PublicKey | undefined;
-      if (hasParent) {
+      if (parentTag === 1) {
         parentPDA = new PublicKey(accountData.subarray(offset, offset + 32));
+        offset += 32;
       }
-      
+
+      // is_allowed: bool (u8)
+      const _isAllowed = accountData.readUInt8(offset) === 1;
+      offset += 1;
+
+      // lineage_depth: u16
+      const depth = accountData.readUInt16LE(offset);
+      offset += 2;
+
       return {
-        modelPDA: new PublicKey(''), // 실제 PDA는 호출자에서 설정
-        developerWallet,
+        modelPDA: new PublicKey(''), // 호출부에서 설정
+        developerWallet: creator,
         modelId,
         modelName,
         royaltyBps,

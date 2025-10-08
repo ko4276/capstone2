@@ -4,6 +4,7 @@ import { ModelData, SubscriptionData, TransactionRequest, ApiResponse } from '..
 import { resolveModelIdentifierToPubkey } from '../utils/modelResolver';
 import { logger } from '../utils/logger';
 import Joi from 'joi';
+import { pricingSchema, pricingTierSchema, metricsSchema } from '../utils/validation';
 
 export class TransactionService {
   private solanaService: SolanaService;
@@ -32,7 +33,13 @@ export class TransactionService {
     const schema = Joi.object({
       modelId: Joi.string().required(),
       modelName: Joi.string().required(),
+      uploader: Joi.string().optional(),
+      versionName: Joi.string().optional(),
+      modality: Joi.string().optional(),
       ipfsCid: Joi.string().required(),
+      pricing: pricingSchema,
+      metrics: metricsSchema,
+      thumbnail: Joi.string().optional(),
       priceLamports: Joi.number().integer().min(0).required(),
       royaltyBps: Joi.number().integer().min(0).max(10000).required(),
       parentModelPubkey: Joi.string().optional(),
@@ -299,13 +306,19 @@ export class TransactionService {
     try {
       logger.info('Processing model metadata update:', { modelPubkey: request.data.modelPubkey });
 
-      // 요청 데이터 검증
+      // 요청 데이터 검증 (pricing/metrics 포함 허용)
       const schema = Joi.object({
         modelPubkey: Joi.string().required(),
         updates: Joi.object({
           modelName: Joi.string().optional(),
           ipfsCid: Joi.string().optional(),
-          royaltyBps: Joi.number().integer().min(0).max(10000).optional()
+          royaltyBps: Joi.number().integer().min(0).max(10000).optional(),
+          uploader: Joi.string().optional(),
+          versionName: Joi.string().optional(),
+          modality: Joi.string().optional(),
+          thumbnail: Joi.string().optional(),
+          pricing: pricingSchema,
+          metrics: metricsSchema
         }).required()
       });
 
