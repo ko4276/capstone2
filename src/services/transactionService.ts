@@ -52,6 +52,7 @@ export class TransactionService {
       
       // 선택 필드
       priceLamports: Joi.number().integer().min(0).optional(),
+      parentModelPDA: Joi.string().optional(),
       // 개발자 서명 제거: 외부에서 전달받은 개발자 주소(옵션). 없으면 서버가 주입
       creatorPubkey: Joi.string().optional()
     }).options({ allowUnknown: true, stripUnknown: true });
@@ -104,8 +105,8 @@ export class TransactionService {
       throw new Error(`Invalid sample JSON: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
 
-    // 부모 모델은 remaining_accounts로 전달되므로 여기서는 Pubkey 해석만 옵션으로 지원
-    const parentPubkey = undefined;
+    // 부모 모델은 remaining_accounts로 전달: 요청에서 parentModelPDA(Base58) 수신 시 사용
+    const parentPubkey = value.parentModelPDA ? new PublicKey(value.parentModelPDA) : undefined;
 
     // creatorPubkey가 없으면 서버 기본값으로 주입(환경변수 등)
     const creatorPubkeyStr = value.creatorPubkey || process.env.DEFAULT_CREATOR_PUBKEY;
