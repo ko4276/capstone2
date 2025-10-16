@@ -130,15 +130,15 @@ router.post('/pda', async (req: Request, res: Response) => {
 
     switch (type) {
       case 'model':
-        if (!seeds.developerWallet || !seeds.modelId) {
+        if (!seeds.developerWallet || !seeds.modelName) {
           return res.status(400).json({
             success: false,
-            error: 'Developer wallet and model ID are required for model PDA'
+            error: 'Developer wallet and model name are required for model PDA'
           });
         }
         pda = await solanaService.getModelAccountPDA(
           new (await import('@solana/web3.js')).PublicKey(seeds.developerWallet),
-          seeds.modelId
+          seeds.modelName
         );
         break;
 
@@ -268,7 +268,6 @@ router.post('/lineage-royalty-calculation', async (req: Request, res: Response) 
           isValid: lineageTrace.isValid,
           lineage: lineageTrace.lineage.map(l => ({
             modelPDA: l.modelPDA.toString(),
-            modelId: l.modelId,
             modelName: l.modelName,
             developerWallet: l.developerWallet.toString(),
             royaltyBps: l.royaltyBps,
@@ -318,7 +317,6 @@ router.post('/trace-lineage', async (req: Request, res: Response) => {
           violations: lineageTrace.violations,
           lineage: lineageTrace.lineage.map(l => ({
             modelPDA: l.modelPDA.toString(),
-            modelId: l.modelId,
             modelName: l.modelName,
             developerWallet: l.developerWallet.toString(),
             royaltyBps: l.royaltyBps,

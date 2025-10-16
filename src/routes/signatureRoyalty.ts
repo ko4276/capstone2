@@ -99,7 +99,6 @@ router.post('/process-signature-royalty', async (req: Request, res: Response) =>
           isValid: lineageTrace.isValid,
           lineage: lineageTrace.lineage.map(l => ({
             modelPDA: l.modelPDA.toString(),
-            modelId: l.modelId,
             modelName: l.modelName,
             developerWallet: l.developerWallet.toString(),
             royaltyBps: l.royaltyBps,
