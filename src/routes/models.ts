@@ -6,10 +6,10 @@ import { ApiResponse } from '../types';
 const router = Router();
 const solanaService = new SolanaService();
 
-// 모델 정보 조회
-router.get('/:modelId', async (req: Request, res: Response) => {
+// 모델 정보 조회 (modelName 기반 PDA)
+router.get('/:modelName', async (req: Request, res: Response) => {
   try {
-    const { modelId } = req.params;
+    const { modelName } = req.params;
     const { developerWallet } = req.query;
 
     if (!developerWallet) {
@@ -22,7 +22,7 @@ router.get('/:modelId', async (req: Request, res: Response) => {
     // 모델 계정 PDA 계산
     const modelAccountPDA = await solanaService.getModelAccountPDA(
       new (await import('@solana/web3.js')).PublicKey(developerWallet as string),
-      modelId
+      modelName
     );
 
     // 계정 정보 조회
@@ -38,7 +38,7 @@ router.get('/:modelId', async (req: Request, res: Response) => {
     const response: ApiResponse = {
       success: true,
       data: {
-        modelId,
+        modelName,
         modelAccountPDA: modelAccountPDA.toString(),
         accountInfo: {
           executable: accountInfo.executable,

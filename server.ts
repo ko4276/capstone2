@@ -51,6 +51,7 @@ app.use('/api/models', require('./src/routes/models').default || require('./src/
 app.use('/api/subscriptions', require('./src/routes/subscriptions').default || require('./src/routes/subscriptions'));
 app.use('/api/transactions', require('./src/routes/transactions').default || require('./src/routes/transactions'));
 app.use('/api/blockchain', require('./src/routes/blockchain').default || require('./src/routes/blockchain'));
+app.use('/api/signature-royalty', require('./src/routes/signatureRoyalty').default || require('./src/routes/signatureRoyalty'));
 
 // Error handling middleware
 app.use(notFoundHandler);

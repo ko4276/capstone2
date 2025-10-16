@@ -57,7 +57,8 @@ router.post('/process', async (req: Request, res: Response) => {
   }
 });
 
-// 모델 등록 트랜잭션
+// 모델 등록 트랜잭션 (주석처리 - 메타데이터 직접 전송 방식 사용)
+/*
 router.post('/register-model', async (req: Request, res: Response) => {
   try {
     const transactionRequest: TransactionRequest = {
@@ -75,8 +76,10 @@ router.post('/register-model', async (req: Request, res: Response) => {
     });
   }
 });
+*/
 
-// 모델 등록 미서명 트랜잭션 준비
+// 모델 등록 미서명 트랜잭션 준비 (주석처리 - 메타데이터 직접 전송 방식 사용)
+/*
 router.post('/prepare-register-model', async (req: Request, res: Response) => {
   try {
     const transactionRequest: TransactionRequest = {
@@ -94,8 +97,10 @@ router.post('/prepare-register-model', async (req: Request, res: Response) => {
     });
   }
 });
+*/
 
-// 구독 구매 트랜잭션
+// 구독 구매 트랜잭션 (주석처리 - 메타데이터 직접 전송 방식 사용)
+/*
 router.post('/purchase-subscription', async (req: Request, res: Response) => {
   try {
     const transactionRequest: TransactionRequest = {
@@ -113,8 +118,10 @@ router.post('/purchase-subscription', async (req: Request, res: Response) => {
     });
   }
 });
+*/
 
-// 구독 구매 미서명 트랜잭션 준비
+// 구독 구매 미서명 트랜잭션 준비 (주석처리 - 메타데이터 직접 전송 방식 사용)
+/*
 router.post('/prepare-purchase-subscription', async (req: Request, res: Response) => {
   try {
     const transactionRequest: TransactionRequest = {
@@ -132,6 +139,7 @@ router.post('/prepare-purchase-subscription', async (req: Request, res: Response
     });
   }
 });
+*/
 
 // 모델 메타데이터 업데이트 트랜잭션
 router.post('/update-model-metadata', async (req: Request, res: Response) => {
@@ -208,7 +216,8 @@ router.get('/status/:signature', async (req: Request, res: Response) => {
 
 export default router;
 
-// 외부 백엔드에서 서명된 트랜잭션을 받아서 온체인으로 전송
+// 외부 백엔드에서 서명된 트랜잭션을 받아서 온체인으로 전송 (주석처리 - 메타데이터 직접 전송 방식 사용)
+/*
 router.post('/broadcast-signed', async (req: Request, res: Response) => {
   try {
     const { transactionBase64, options } = req.body || {};
@@ -239,8 +248,10 @@ router.post('/broadcast-signed', async (req: Request, res: Response) => {
     });
   }
 });
+*/
 
-// raw 트랜잭션 전송 (기존 호환성 유지)
+// raw 트랜잭션 전송 (주석처리 - 메타데이터 직접 전송 방식 사용)
+/*
 router.post('/send-raw', async (req: Request, res: Response) => {
   try {
     const { transactionBase64, options } = req.body || {};
@@ -273,88 +284,13 @@ router.post('/simulate-raw', async (req: Request, res: Response) => {
   }
 });
 
-// 메타데이터 + 서명된 트랜잭션을 한 번에 받아 브로드캐스트
+/*
+// [DISABLED] register-model-direct: 메타데이터 + 서명된 트랜잭션을 원샷 처리 (프로덕션 정책에 따라 비활성화)
 router.post('/register-model-direct', async (req: Request, res: Response) => {
-  try {
-    const schema = Joi.object({
-      metadata: Joi.object({
-        modelId: Joi.string().required(),
-        modelName: Joi.string().required(),
-        uploader: Joi.string().optional(),
-        versionName: Joi.string().optional(),
-        modality: Joi.string().optional(),
-        ipfsCid: Joi.string().required(),
-        pricing: pricingSchema,
-        metrics: metricsSchema,
-        thumbnail: Joi.string().optional(),
-        priceLamports: Joi.number().integer().min(0).required(),
-        royaltyBps: Joi.number().integer().min(0).max(10000).required(),
-        parentModelPubkey: Joi.string().optional(),
-        developerWallet: Joi.string().required(),
-        isAllowed: Joi.boolean().required()
-      }).required(),
-      transactionBase64: Joi.string().required(),
-      options: Joi.object({
-        skipPreflight: Joi.boolean().optional(),
-        maxRetries: Joi.number().integer().min(0).optional(),
-        commitment: Joi.string().valid('processed', 'confirmed', 'finalized').optional()
-      }).optional()
-    });
-
-    const { error, value } = schema.validate(req.body);
-    if (error) {
-      return res.status(400).json({ success: false, error: `Validation error: ${error.details[0].message}` });
-    }
-
-    logger.info('Direct register-model: received metadata and signed tx', {
-      modelId: value.metadata.modelId,
-      developerWallet: value.metadata.developerWallet
-    });
-
-    // 1) 시뮬레이션으로 기본 오류 확인
-    const sim = await solanaService.simulateRawTransactionBase64(value.transactionBase64);
-    if (sim?.value?.err) {
-      return res.status(400).json({ success: false, error: 'Simulation failed', data: sim.value });
-    }
-
-    // 2) 경량 구조 검증: fee payer 및 프로그램 호출 포함 여부(가능할 때만)
-    try {
-      const raw = Buffer.from(value.transactionBase64, 'base64');
-      let isLegacyParsed = false;
-      try {
-        const { Transaction, PublicKey } = await import('@solana/web3.js');
-        const legacyTx = Transaction.from(raw);
-        isLegacyParsed = true;
-
-        // fee payer는 developer 지갑인지 확인
-        if (legacyTx.feePayer && legacyTx.feePayer.toString() !== value.metadata.developerWallet) {
-          return res.status(400).json({ success: false, error: 'Fee payer mismatch with developerWallet' });
-        }
-
-        // 프로그램 호출 포함 여부 확인
-        const programIdStr = process.env.PROGRAM_ID || 'GUrLuMj8yCB2T4NKaJSVqrAWWCMPMf1qtBSnDR8ytYwB';
-        const programId = new PublicKey(programIdStr);
-        const hasProgramInvoke = legacyTx.instructions.some(ix => ix.programId.equals(programId));
-        if (!hasProgramInvoke) {
-          return res.status(400).json({ success: false, error: 'Expected program invoke not found in transaction' });
-        }
-      } catch (_) {
-        if (!isLegacyParsed) {
-          logger.info('Versioned tx detected; skipping legacy-specific checks');
-        }
-      }
-    } catch (verErr) {
-      logger.warn('Light verification failed (non-fatal):', verErr instanceof Error ? verErr.message : String(verErr));
-    }
-
-    // 3) 브로드캐스트
-    const result = await transactionService.broadcastSignedTransaction(value.transactionBase64, value.options);
-    return res.json(result);
-  } catch (error) {
-    logger.error('Failed to direct register model with signed tx:', error);
-    return res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Internal server error' });
-  }
+  // Disabled by policy: use register_model or prepare/broadcast flow instead.
+  return res.status(410).json({ success: false, error: 'register-model-direct is disabled. Use register_model or prepare/broadcast.' });
 });
+*/
 
 // 구독 구매도 동일 방식으로 직접 전송 지원
 router.post('/purchase-subscription-direct', async (req: Request, res: Response) => {
@@ -387,6 +323,27 @@ router.post('/purchase-subscription-direct', async (req: Request, res: Response)
     });
 
     const result = await transactionService.broadcastSignedTransaction(value.transactionBase64, value.options);
+    
+    // 성공 시 구독 영수증 PDA 계산하여 응답에 포함
+    if (result.success && result.transactionHash) {
+      try {
+        const subscriptionReceiptPDA = await solanaService.getSubscriptionReceiptPDA(
+          new (await import('@solana/web3.js')).PublicKey(value.metadata.modelPubkey),
+          new (await import('@solana/web3.js')).PublicKey(value.metadata.userWallet)
+        );
+        
+        return res.json({
+          success: result.success,
+          transactionHash: result.transactionHash,
+          subscriptionReceiptPDA: subscriptionReceiptPDA.toString()
+        });
+      } catch (pdaError) {
+        logger.warn('Failed to calculate subscription receipt PDA after successful purchase:', pdaError);
+        // PDA 계산 실패해도 트랜잭션은 성공했으므로 기본 응답 반환
+        return res.json(result);
+      }
+    }
+    
     return res.json(result);
   } catch (error) {
     logger.error('Failed to direct purchase subscription with signed tx:', error);
@@ -394,7 +351,8 @@ router.post('/purchase-subscription-direct', async (req: Request, res: Response)
   }
 });
 
-// 구독 구매: FE 서명 트랜잭션 검증 후 브로드캐스트
+// 구독 구매: FE 서명 트랜잭션 검증 후 브로드캐스트 (주석처리 - 메타데이터 직접 전송 방식 사용)
+/*
 router.post('/purchase-subscription-verify-and-broadcast', async (req: Request, res: Response) => {
   try {
     const schema = Joi.object({
@@ -464,6 +422,7 @@ router.post('/purchase-subscription-verify-and-broadcast', async (req: Request, 
     return res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Internal server error' });
   }
 });
+*/
 
 // 트레저리 기반 정산(데브넷/테스트 전용): 트레저리 지갑에서 분배 전송
 router.post('/treasury/distribute', async (req: Request, res: Response) => {
@@ -496,5 +455,205 @@ router.post('/treasury/distribute', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Failed to distribute from treasury:', error);
     return res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Internal server error' });
+  }
+});
+
+// 트랜잭션 시그니처로 계보 추적 및 로열티 분배
+router.post('/process-signature-royalty', async (req: Request, res: Response) => {
+  try {
+    const schema = Joi.object({
+      transactionSignature: Joi.string().required(),
+      // 외부 백엔드에서 시그니처만 제공하므로 나머지는 모두 선택사항
+      platformFeeBps: Joi.number().integer().min(0).max(10000).optional(),
+      minRoyaltyLamports: Joi.number().integer().min(0).optional(),
+      commitment: Joi.string().valid('processed', 'confirmed', 'finalized').optional(),
+      // SPL Token 트랜잭션의 경우 모델 PDA를 직접 제공할 수 있음
+      modelPDA: Joi.string().optional(),
+      // 테스트 모드: 모델 PDA를 찾지 못해도 계속 진행
+      testMode: Joi.boolean().optional()
+    });
+
+    const { error, value } = schema.validate(req.body);
+    if (error) {
+      return res.status(400).json({ success: false, error: `Validation error: ${error.details[0].message}` });
+    }
+
+    logger.info('Processing signature-based royalty distribution (external backend):', {
+      transactionSignature: value.transactionSignature,
+      providedModelPDA: value.modelPDA || 'auto-detect',
+      testMode: value.testMode || false
+    });
+
+    // 1) 트랜잭션 정보 조회
+    const { PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
+    const transactionInfo = await solanaService.getTransactionInfo(value.transactionSignature);
+    
+    if (!transactionInfo) {
+      return res.status(404).json({ success: false, error: 'Transaction not found' });
+    }
+
+    // 🔍 DEBUG: 트랜잭션 정보 로그 출력
+    const message = transactionInfo.transaction?.message;
+    let accountKeysCount = 0;
+    let instructionsCount = 0;
+    
+    try {
+      if (message) {
+        if (typeof message.getAccountKeys === 'function') {
+          accountKeysCount = message.getAccountKeys().length;
+        } else if ((message as any).accountKeys) {
+          accountKeysCount = (message as any).accountKeys.length;
+        }
+        
+        if ((message as any).instructions) {
+          instructionsCount = (message as any).instructions.length;
+        }
+      }
+    } catch (error) {
+      logger.warn('Failed to get message details:', error);
+    }
+    
+    logger.info('🔍 DEBUG - Transaction Info:', {
+      signature: value.transactionSignature,
+      hasTransaction: !!transactionInfo.transaction,
+      hasMeta: !!transactionInfo.meta,
+      accountKeysCount,
+      instructionsCount,
+      logMessages: transactionInfo.meta?.logMessages || [],
+      innerInstructions: transactionInfo.meta?.innerInstructions?.length || 0
+    });
+
+    // 2) 트랜잭션에서 실제 전송된 금액 추출
+    const totalLamports = await solanaService.extractTransferredAmountFromTransaction(transactionInfo);
+    
+    // 🔍 DEBUG: 금액 추출 결과 로그 출력
+    logger.info('🔍 DEBUG - Amount Extraction:', {
+      totalLamports,
+      totalSOL: totalLamports / LAMPORTS_PER_SOL,
+      foundTransfer: totalLamports > 0
+    });
+    
+    if (totalLamports === 0) {
+      return res.status(400).json({ success: false, error: 'No SOL transfer found in transaction' });
+    }
+
+    // 3) 트랜잭션에서 모델 PDA 추출 또는 요청에서 제공받은 PDA 사용
+    let modelPDA: any = null;
+    
+    if (value.modelPDA) {
+      // 요청에서 직접 제공된 모델 PDA 사용
+      try {
+        modelPDA = new PublicKey(value.modelPDA);
+        logger.info('Using provided model PDA:', { modelPDA: modelPDA.toString() });
+      } catch (error) {
+        return res.status(400).json({ success: false, error: 'Invalid model PDA provided' });
+      }
+    } else {
+      // 트랜잭션에서 모델 PDA 추출
+      modelPDA = await solanaService.extractModelPDAFromTransaction(transactionInfo);
+      
+      // 🔍 DEBUG: 모델 PDA 추출 결과 로그 출력
+      logger.info('🔍 DEBUG - Model PDA Extraction:', {
+        foundModelPDA: !!modelPDA,
+        modelPDA: modelPDA ? modelPDA.toString() : null,
+        testMode: value.testMode || false
+      });
+      
+      if (!modelPDA && !value.testMode) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Could not extract model PDA from transaction. Provide modelPDA in request or use testMode=true' 
+        });
+      }
+    }
+
+    // 4) 계보 추적 (모델 PDA가 있는 경우에만)
+    let lineageTrace = null;
+    if (modelPDA) {
+      lineageTrace = await solanaService.traceLineage(modelPDA, 32);
+      if (!lineageTrace.isValid && !value.testMode) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid lineage detected',
+          data: { violations: lineageTrace.violations }
+        });
+      }
+    }
+
+    // 5) 로열티 분배 계산 (계보가 있는 경우에만)
+    const platformFeeBps = value.platformFeeBps ?? parseInt(process.env.PLATFORM_FEE_BPS || '500');
+    const minRoyaltyLamports = value.minRoyaltyLamports ?? parseInt(process.env.MIN_ROYALTY_LAMPORTS || '1000');
+    
+    let distribution = null;
+    let distributionSignature = null;
+    let actualDistribution = null;
+
+    if (lineageTrace && lineageTrace.isValid) {
+      distribution = solanaService.calculateLineageRoyaltyDistribution(
+        totalLamports,
+        lineageTrace,
+        platformFeeBps,
+        minRoyaltyLamports
+      );
+
+      // 6) 트레저리에서 분배 실행
+      const developerWallet = lineageTrace.lineage[0]?.developerWallet;
+      if (developerWallet && modelPDA) {
+        const result = await solanaService.distributeFromTreasury(
+          totalLamports,
+          modelPDA,
+          developerWallet,
+          { platformFeeBps, minRoyaltyLamports, commitment: value.commitment }
+        );
+        distributionSignature = result.signature;
+        actualDistribution = result.distribution;
+      }
+    } else if (value.testMode) {
+      // 테스트 모드: 간단한 분배 계산만 수행
+      distribution = {
+        totalLamports,
+        platformAmount: Math.floor(totalLamports * platformFeeBps / 10000),
+        developerAmount: totalLamports - Math.floor(totalLamports * platformFeeBps / 10000),
+        lineageRoyalties: [],
+        totalLineageAmount: 0,
+        remainingAmount: totalLamports - Math.floor(totalLamports * platformFeeBps / 10000)
+      };
+    }
+
+    return res.json({
+      success: true,
+      message: 'Signature-based royalty distribution completed successfully',
+      data: {
+        originalTransaction: {
+          signature: value.transactionSignature,
+          modelPDA: modelPDA ? modelPDA.toString() : null,
+          totalLamports: totalLamports,
+          totalSOL: totalLamports / LAMPORTS_PER_SOL
+        },
+        lineageTrace: lineageTrace ? {
+          totalDepth: lineageTrace.totalDepth,
+          isValid: lineageTrace.isValid,
+          lineage: lineageTrace.lineage.map(l => ({
+            modelPDA: l.modelPDA.toString(),
+            modelName: l.modelName,
+            developerWallet: l.developerWallet.toString(),
+            royaltyBps: l.royaltyBps,
+            depth: l.depth,
+            parentPDA: l.parentPDA?.toString()
+          }))
+        } : null,
+        distribution: actualDistribution || distribution,
+        distributionTransaction: distributionSignature ? {
+          signature: distributionSignature
+        } : null,
+        testMode: value.testMode || false
+      }
+    });
+  } catch (error) {
+    logger.error('Failed to process signature-based royalty distribution:', error);
+    return res.status(500).json({ 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Internal server error' 
+    });
   }
 });

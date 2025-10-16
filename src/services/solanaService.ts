@@ -143,13 +143,14 @@ export class SolanaService {
     return this.treasuryKeypair;
   }
 
-  // 모델 계정 PDA 생성
-  async getModelAccountPDA(developerWallet: PublicKey, modelId: string): Promise<PublicKey> {
+  // 모델 계정 PDA 생성 (model_name 기반)
+  async getModelAccountPDA(developerWallet: PublicKey, modelName: string): Promise<PublicKey> {
     const [pda] = await PublicKey.findProgramAddress(
       [
         Buffer.from('model'),
+        // 개발자 서명 제거 후에도 PDA는 개발자(pubkey=creator_pubkey)와 modelId로 결정
         developerWallet.toBuffer(),
-        Buffer.from(modelId)
+        Buffer.from(modelName)
       ],
       this.programId
     );
@@ -197,9 +198,10 @@ export class SolanaService {
     developerKeypair: Keypair
   ): Promise<Transaction> {
     try {
+      const treasury = this.getTreasuryKeypair();
       const modelAccountPDA = await this.getModelAccountPDA(
         modelData.developerWallet,
-        modelData.modelId
+        modelData.modelName
       );
 
       const transaction = new Transaction();
@@ -210,22 +212,41 @@ export class SolanaService {
       const royalty = Buffer.alloc(2);
       royalty.writeUInt16LE(modelData.royaltyBps, 0);
 
+      // creator_pubkey: 프로그램 서명 제거 설계에 따라 인자로 전달
+      const creatorPubkeyBytes = modelData.developerWallet.toBuffer();
+
       const instructionData = Buffer.concat([
         createModelDiscriminator,
-        this.encodeBorshString(modelData.modelId),
+        // model_name 이후 순서로 lib.rs 인자에 정확히 맞춤
         this.encodeBorshString(modelData.modelName),
-        this.encodeBorshString(modelData.ipfsCid),
+        this.encodeBorshString(modelData.uploader),
+        this.encodeBorshString(modelData.versionName),
+        this.encodeBorshString(modelData.modality),
+        this.encodeBorshString(modelData.license),
+        this.encodeBorshString(JSON.stringify(modelData.pricing)),
+        Buffer.from(modelData.walletAddress.toBuffer()),
+        this.encodeBorshString(modelData.releaseDate),
+        this.encodeBorshString(modelData.overview),
+        this.encodeBorshString(modelData.releaseNotes),
+        this.encodeBorshString(modelData.thumbnail),
+        this.encodeBorshString(JSON.stringify(modelData.metrics)),
+        this.encodeBorshString(JSON.stringify(modelData.technicalSpecs)),
+        this.encodeBorshString(JSON.stringify(modelData.sample)),
+        this.encodeBorshString(modelData.cidRoot),
+        this.encodeBorshString(modelData.encryptionKey),
+        this.encodeBorshString(modelData.relationship),
         royalty,
-        Buffer.from([modelData.isAllowed ? 1 : 0])
+        creatorPubkeyBytes
       ]);
 
       const keys = [
         { pubkey: modelAccountPDA, isSigner: false, isWritable: true },
-        { pubkey: modelData.developerWallet, isSigner: true, isWritable: true },
+        // payer는 트레저리(서버 보유 키)로 변경
+        { pubkey: treasury.publicKey, isSigner: true, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
       ] as { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[];
 
-      // 부모 모델 PDA가 제공된 경우, 참조 계정으로 포함 (읽기 전용)
+      // 부모 모델 PDA가 제공된 경우, remaining_accounts로 전달되도록 키 배열에 추가 (읽기 전용)
       if (modelData.parentModelPubkey) {
         keys.push({ pubkey: modelData.parentModelPubkey, isSigner: false, isWritable: false });
       }
@@ -238,8 +259,12 @@ export class SolanaService {
 
       transaction.add(createModelInstruction);
 
+      // 수수료 지불자도 트레저리로 설정 (호출부에서 재설정 가능)
+      const recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+      transaction.recentBlockhash = recentBlockhash;
+      transaction.feePayer = treasury.publicKey;
+
       logger.info('Model registration transaction created:', {
-        modelId: modelData.modelId,
         modelAccountPDA: modelAccountPDA.toString(),
         instructionDataLength: instructionData.length,
         discriminator: Array.from(createModelDiscriminator).map(b => '0x' + b.toString(16).padStart(2, '0')).join(', ')
@@ -359,12 +384,6 @@ export class SolanaService {
       // discriminator (8 bytes)
       offset += 8;
 
-      // model_id: String
-      const modelIdLength = accountData.readUInt32LE(offset);
-      offset += 4;
-      const modelId = accountData.subarray(offset, offset + modelIdLength).toString('utf8');
-      offset += modelIdLength;
-
       // creator: Pubkey (LineageInfo의 developerWallet로 매핑)
       const creator = new PublicKey(accountData.subarray(offset, offset + 32));
       offset += 32;
@@ -375,11 +394,68 @@ export class SolanaService {
       const modelName = accountData.subarray(offset, offset + modelNameLength).toString('utf8');
       offset += modelNameLength;
 
-      // ipfs_cid: String
-      const ipfsCidLength = accountData.readUInt32LE(offset);
-      offset += 4;
-      // 읽기만 하고 현재 반환 구조에는 포함하지 않음
-      offset += ipfsCidLength;
+      // uploader: String
+      const uploaderLen = accountData.readUInt32LE(offset);
+      offset += 4 + uploaderLen;
+
+      // version_name: String
+      const versionLen = accountData.readUInt32LE(offset);
+      offset += 4 + versionLen;
+
+      // modality: String
+      const modalityLen = accountData.readUInt32LE(offset);
+      offset += 4 + modalityLen;
+
+      // license: String
+      const licenseLen = accountData.readUInt32LE(offset);
+      offset += 4 + licenseLen;
+
+      // pricing: String
+      const pricingLen = accountData.readUInt32LE(offset);
+      offset += 4 + pricingLen;
+
+      // wallet_address: Pubkey
+      offset += 32;
+
+      // release_date: String
+      const releaseDateLen = accountData.readUInt32LE(offset);
+      offset += 4 + releaseDateLen;
+
+      // overview: String
+      const overviewLen = accountData.readUInt32LE(offset);
+      offset += 4 + overviewLen;
+
+      // release_notes: String
+      const notesLen = accountData.readUInt32LE(offset);
+      offset += 4 + notesLen;
+
+      // thumbnail: String
+      const thumbLen = accountData.readUInt32LE(offset);
+      offset += 4 + thumbLen;
+
+      // metrics: String
+      const metricsLen = accountData.readUInt32LE(offset);
+      offset += 4 + metricsLen;
+
+      // technical_specs: String
+      const specsLen = accountData.readUInt32LE(offset);
+      offset += 4 + specsLen;
+
+      // sample: String
+      const sampleLen = accountData.readUInt32LE(offset);
+      offset += 4 + sampleLen;
+
+      // cid_root: String
+      const cidLen = accountData.readUInt32LE(offset);
+      offset += 4 + cidLen;
+
+      // encryption_key: String
+      const encLen = accountData.readUInt32LE(offset);
+      offset += 4 + encLen;
+
+      // relationship: String
+      const relLen = accountData.readUInt32LE(offset);
+      offset += 4 + relLen;
 
       // royalty_bps: u16
       const royaltyBps = accountData.readUInt16LE(offset);
@@ -390,10 +466,6 @@ export class SolanaService {
       // 하지만 여기서는 오프셋만 이동
       offset += 8;
 
-      // is_active: bool (u8)
-      const _isActive = accountData.readUInt8(offset) === 1;
-      offset += 1;
-
       // parent_model_pubkey: Option<Pubkey> (1 byte tag + 32 if Some)
       const parentTag = accountData.readUInt8(offset);
       offset += 1;
@@ -403,10 +475,6 @@ export class SolanaService {
         offset += 32;
       }
 
-      // is_allowed: bool (u8)
-      const _isAllowed = accountData.readUInt8(offset) === 1;
-      offset += 1;
-
       // lineage_depth: u16
       const depth = accountData.readUInt16LE(offset);
       offset += 2;
@@ -414,7 +482,6 @@ export class SolanaService {
       return {
         modelPDA: new PublicKey(''), // 호출부에서 설정
         developerWallet: creator,
-        modelId,
         modelName,
         royaltyBps,
         depth,
@@ -744,6 +811,250 @@ export class SolanaService {
     } catch (error) {
       logger.error('Failed to create account creation transaction:', error);
       throw error;
+    }
+  }
+
+  // 트랜잭션 정보 조회
+  async getTransactionInfo(signature: string) {
+    try {
+      const transaction = await this.connection.getTransaction(signature, {
+        commitment: 'confirmed',
+        maxSupportedTransactionVersion: 0
+      });
+      return transaction;
+    } catch (error) {
+      logger.error('Failed to get transaction info:', error);
+      throw error;
+    }
+  }
+
+  // 트랜잭션에서 모델 PDA 추출 (SPL Token 트랜잭션 포함)
+  async extractModelPDAFromTransaction(transactionInfo: any): Promise<PublicKey | null> {
+    try {
+      if (!transactionInfo || !transactionInfo.transaction) {
+        return null;
+      }
+
+      const transaction = transactionInfo.transaction;
+      const message = transaction.message;
+      let accountKeys: any[] = [];
+      let instructions: any[] = [];
+
+      try {
+        if (typeof message.getAccountKeys === 'function') {
+          accountKeys = message.getAccountKeys();
+        } else if ((message as any).accountKeys) {
+          const accountKeysObj = (message as any).accountKeys;
+          // VersionedTransaction의 경우 staticAccountKeys 속성을 가질 수 있음
+          if (accountKeysObj.staticAccountKeys) {
+            accountKeys = accountKeysObj.staticAccountKeys;
+          } else if (Array.isArray(accountKeysObj)) {
+            accountKeys = accountKeysObj;
+          } else {
+            accountKeys = [];
+          }
+        }
+        
+        if ((message as any).instructions) {
+          instructions = (message as any).instructions;
+        }
+      } catch (error) {
+        logger.warn('Failed to get message details for PDA extraction:', error);
+        return null;
+      }
+      
+      // 1) 먼저 우리 프로그램 호출에서 모델 PDA 찾기
+      for (const instruction of instructions) {
+        if (instruction.programIdIndex !== undefined && 
+            instruction.programIdIndex >= 0 && 
+            instruction.programIdIndex < accountKeys.length) {
+          const programId = accountKeys[instruction.programIdIndex];
+          
+          // 우리 프로그램 ID와 일치하는지 확인
+          if (programId.toString() === this.programId.toString()) {
+            // 첫 번째 계정이 모델 PDA (일반적으로)
+            if (instruction.accounts && instruction.accounts.length > 0) {
+              const modelPDAIndex = instruction.accounts[0];
+              if (modelPDAIndex !== undefined) {
+                return new PublicKey(accountKeys[modelPDAIndex]);
+              }
+            }
+          }
+        }
+      }
+
+      // 2) SPL Token 트랜잭션의 경우 로그에서 모델 PDA 찾기
+      if (transactionInfo.meta && transactionInfo.meta.logMessages) {
+        for (const logMessage of transactionInfo.meta.logMessages) {
+          // 로그에서 모델 PDA 패턴 찾기 (예: "Model PDA: 29Gpf7JivkwAHdh8SkTkn4omuAwrAWk7K2ukHzZe4U7m")
+          const modelPDAMatch = logMessage.match(/Model PDA: ([A-Za-z0-9]{32,44})/);
+          if (modelPDAMatch) {
+            try {
+              return new PublicKey(modelPDAMatch[1]);
+            } catch (error) {
+              logger.warn('Invalid model PDA in log:', modelPDAMatch[1]);
+            }
+          }
+          
+          // 또는 다른 패턴으로 모델 PDA 찾기
+          const pdaMatch = logMessage.match(/model_account: ([A-Za-z0-9]{32,44})/);
+          if (pdaMatch) {
+            try {
+              return new PublicKey(pdaMatch[1]);
+            } catch (error) {
+              logger.warn('Invalid PDA in log:', pdaMatch[1]);
+            }
+          }
+        }
+      }
+
+      // 3) 메타데이터에서 모델 PDA 찾기 (외부 백엔드가 메타데이터에 포함한 경우)
+      if (transactionInfo.meta && transactionInfo.meta.innerInstructions) {
+        for (const innerInstruction of transactionInfo.meta.innerInstructions) {
+          for (const instruction of innerInstruction.instructions) {
+            if (instruction.programIdIndex !== undefined && 
+                instruction.programIdIndex >= 0 && 
+                instruction.programIdIndex < accountKeys.length) {
+              const programId = accountKeys[instruction.programIdIndex];
+              if (programId.toString() === this.programId.toString()) {
+                if (instruction.accounts && instruction.accounts.length > 0) {
+                  const modelPDAIndex = instruction.accounts[0];
+                  if (modelPDAIndex !== undefined) {
+                    return new PublicKey(accountKeys[modelPDAIndex]);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      logger.warn('No model PDA found in transaction');
+      return null;
+    } catch (error) {
+      logger.error('Failed to extract model PDA from transaction:', error);
+      return null;
+    }
+  }
+
+  // 트랜잭션에서 실제 전송된 SOL 금액 추출 (SPL Token 포함)
+  async extractTransferredAmountFromTransaction(transactionInfo: any): Promise<number> {
+    try {
+      if (!transactionInfo || !transactionInfo.transaction) {
+        return 0;
+      }
+
+      const transaction = transactionInfo.transaction;
+      const message = transaction.message;
+      let accountKeys: any[] = [];
+      let instructions: any[] = [];
+      let totalTransferred = 0;
+
+      try {
+        if (typeof message.getAccountKeys === 'function') {
+          accountKeys = message.getAccountKeys();
+        } else if ((message as any).accountKeys) {
+          const accountKeysObj = (message as any).accountKeys;
+          // VersionedTransaction의 경우 staticAccountKeys 속성을 가질 수 있음
+          if (accountKeysObj.staticAccountKeys) {
+            accountKeys = accountKeysObj.staticAccountKeys;
+          } else if (Array.isArray(accountKeysObj)) {
+            accountKeys = accountKeysObj;
+          } else {
+            accountKeys = [];
+          }
+        }
+        
+        if ((message as any).instructions) {
+          instructions = (message as any).instructions;
+        }
+      } catch (error) {
+        logger.warn('Failed to get message details:', error);
+        return 0;
+      }
+
+      // 🔍 DEBUG: 인스트럭션 분석 로그
+      logger.info('🔍 DEBUG - Analyzing Instructions:', {
+        instructionsCount: instructions.length,
+        accountKeysCount: accountKeys.length,
+        accountKeysType: typeof accountKeys,
+        accountKeysIsArray: Array.isArray(accountKeys),
+        accountKeys: Array.isArray(accountKeys) ? accountKeys.map((key, index) => ({ index, key: key ? key.toString() : 'undefined' })) : 'Not an array'
+      });
+
+      // accountKeys가 배열인지 확인
+      if (!Array.isArray(accountKeys)) {
+        logger.warn('accountKeys is not an array:', { accountKeys, type: typeof accountKeys });
+        return 0;
+      }
+
+      // 모든 인스트럭션을 확인하여 SOL/SPL Token 전송 금액 합계
+      for (let i = 0; i < instructions.length; i++) {
+        const instruction = instructions[i];
+        if (instruction.programIdIndex !== undefined && 
+            instruction.programIdIndex >= 0 && 
+            instruction.programIdIndex < accountKeys.length) {
+          const programId = accountKeys[instruction.programIdIndex];
+          
+          // 🔍 DEBUG: 각 인스트럭션 정보 로그
+          logger.info(`🔍 DEBUG - Instruction ${i}:`, {
+            programId: programId ? programId.toString() : 'undefined',
+            isSystemProgram: programId ? programId.toString() === SystemProgram.programId.toString() : false,
+            isSPLToken: programId ? programId.toString() === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' : false,
+            dataLength: instruction.data?.length || 0,
+            accountsCount: instruction.accounts?.length || 0,
+            programIdIndex: instruction.programIdIndex
+          });
+          
+          // SystemProgram.transfer 인스트럭션인지 확인
+          if (programId && programId.toString() === SystemProgram.programId.toString()) {
+            // SystemProgram.transfer의 데이터 길이는 4바이트 (discriminator) + 8바이트 (lamports)
+            if (instruction.data && instruction.data.length >= 12) {
+              // lamports 값 추출 (8바이트 little-endian)
+              const lamportsData = instruction.data.slice(4, 12);
+              const lamports = lamportsData.readBigUInt64LE(0);
+              totalTransferred += Number(lamports);
+              
+              logger.info(`🔍 DEBUG - SystemProgram Transfer Found:`, {
+                lamports: Number(lamports),
+                sol: Number(lamports) / LAMPORTS_PER_SOL
+              });
+            }
+          }
+          
+          // SPL Token Program 인스트럭션인지 확인
+          else if (programId && programId.toString() === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') {
+            // SPL Token transfer 인스트럭션 (discriminator: 3)
+            if (instruction.data && instruction.data.length >= 1) {
+              const discriminator = instruction.data[0];
+              if (discriminator === 3) { // Transfer instruction
+                // SPL Token transfer에서 amount는 8바이트 little-endian
+                if (instruction.data.length >= 9) {
+                  const amountData = instruction.data.slice(1, 9);
+                  const amount = amountData.readBigUInt64LE(0);
+                  // SPL Token은 보통 6자리 소수점을 사용하므로 SOL로 변환
+                  totalTransferred += Number(amount) / 1000000; // 1 SOL = 1,000,000 micro-SOL
+                  
+                  logger.info(`🔍 DEBUG - SPL Token Transfer Found:`, {
+                    amount: Number(amount),
+                    convertedSOL: Number(amount) / 1000000
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      logger.info('🔍 DEBUG - Final Amount Extraction:', {
+        totalTransferred,
+        totalTransferredSOL: totalTransferred / LAMPORTS_PER_SOL
+      });
+
+      return totalTransferred;
+    } catch (error) {
+      logger.error('Failed to extract transferred amount from transaction:', error);
+      return 0;
     }
   }
 }

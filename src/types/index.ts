@@ -20,21 +20,31 @@ export interface ModelPricing {
 export type ModelMetrics = Record<string, number>; // flexible to fit different modalities
 
 export interface ModelData {
-  modelId: string;
+  // 필수 필드
   modelName: string;
   uploader: string;
   versionName: string;
   modality: string; // e.g., 'LLM' | 'image-generation' | 'multimodal' | 'audio'
-  ipfsCid: string;
-  pricing?: ModelPricing;
-  metrics?: ModelMetrics;
-  thumbnail?: string;
-  priceLamports: number;
+  license: string;
+  pricing: ModelPricing; // JSON 파싱된 객체
+  walletAddress: PublicKey;
+  releaseDate: string;
+  overview: string;
+  releaseNotes: string;
+  thumbnail: string;
+  metrics: ModelMetrics; // JSON 파싱된 객체
+  technicalSpecs: Record<string, any>; // JSON 파싱된 객체
+  sample: Record<string, any>; // JSON 파싱된 객체
+  cidRoot: string;
+  encryptionKey: string;
+  relationship: string;
+  
+  // 선택 필드
+  priceLamports?: number;
   royaltyBps: number;
   parentModelPubkey?: PublicKey;
   developerWallet: PublicKey;
-  isAllowed: boolean;
-  lineageDepth: number;
+  lineageDepth?: number;
 }
 
 // 구독 관련 타입
@@ -86,7 +96,6 @@ export interface SolanaAccountInfo {
 export interface LineageInfo {
   modelPDA: PublicKey;
   developerWallet: PublicKey;
-  modelId: string;
   modelName: string;
   royaltyBps: number;
   depth: number;

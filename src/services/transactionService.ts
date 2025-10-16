@@ -31,36 +31,111 @@ export class TransactionService {
   // 모델 등록 요청 검증
   private async validateModelRegistrationWithNameResolution(data: any): Promise<ModelData> {
     const schema = Joi.object({
-      modelId: Joi.string().required(),
+      // 필수 필드 (modelId 제거)
       modelName: Joi.string().required(),
-      uploader: Joi.string().optional(),
-      versionName: Joi.string().optional(),
-      modality: Joi.string().optional(),
-      ipfsCid: Joi.string().required(),
-      pricing: pricingSchema,
-      metrics: metricsSchema,
-      thumbnail: Joi.string().optional(),
-      priceLamports: Joi.number().integer().min(0).required(),
-      royaltyBps: Joi.number().integer().min(0).max(10000).required(),
-      parentModelPubkey: Joi.string().optional(),
-      developerWallet: Joi.string().required(),
-      isAllowed: Joi.boolean().required()
-    });
+      uploader: Joi.string().required(),
+      versionName: Joi.string().required(),
+      modality: Joi.string().required(),
+      license: Joi.string().required(),
+      pricing: Joi.string().required(), // JSON 문자열로 받아서 파싱
+      walletAddress: Joi.string().required(),
+      releaseDate: Joi.string().required(),
+      overview: Joi.string().required(),
+      releaseNotes: Joi.string().required(),
+      thumbnail: Joi.string().required(),
+      metrics: Joi.string().required(), // JSON 문자열로 받아서 파싱
+      technicalSpecs: Joi.string().required(), // JSON 문자열로 받아서 파싱
+      sample: Joi.string().required(), // JSON 문자열로 받아서 파싱
+      cidRoot: Joi.string().required(),
+      encryptionKey: Joi.string().required(),
+      relationship: Joi.string().required(),
+      
+      // 선택 필드
+      priceLamports: Joi.number().integer().min(0).optional(),
+      // 개발자 서명 제거: 외부에서 전달받은 개발자 주소(옵션). 없으면 서버가 주입
+      creatorPubkey: Joi.string().optional()
+    }).options({ allowUnknown: true, stripUnknown: true });
 
     const { error, value } = schema.validate(data);
     if (error) {
       throw new Error(`Validation error: ${error.details[0].message}`);
     }
 
-    const parentPubkey = value.parentModelPubkey
-      ? await resolveModelIdentifierToPubkey(value.parentModelPubkey)
-      : undefined;
+    // JSON 문자열 필드들을 파싱하고 검증
+    let parsedPricing, parsedMetrics, parsedTechnicalSpecs, parsedSample;
+    
+    try {
+      parsedPricing = JSON.parse(value.pricing);
+      // pricing 구조 검증 (모달리티에 따라 다를 수 있음)
+      if (typeof parsedPricing !== 'object' || parsedPricing === null) {
+        throw new Error('Invalid pricing structure');
+      }
+    } catch (e) {
+      throw new Error(`Invalid pricing JSON: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
 
+    try {
+      parsedMetrics = JSON.parse(value.metrics);
+      // metrics 구조 검증 (모달리티에 따라 다를 수 있음)
+      if (typeof parsedMetrics !== 'object' || parsedMetrics === null) {
+        throw new Error('Invalid metrics structure');
+      }
+    } catch (e) {
+      throw new Error(`Invalid metrics JSON: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+
+    try {
+      parsedTechnicalSpecs = JSON.parse(value.technicalSpecs);
+      // technicalSpecs 구조 검증 (모달리티에 따라 다를 수 있음)
+      if (typeof parsedTechnicalSpecs !== 'object' || parsedTechnicalSpecs === null) {
+        throw new Error('Invalid technicalSpecs structure');
+      }
+    } catch (e) {
+      throw new Error(`Invalid technicalSpecs JSON: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+
+    try {
+      parsedSample = JSON.parse(value.sample);
+      // sample 구조 검증 (모달리티에 따라 다를 수 있음)
+      if (typeof parsedSample !== 'object' || parsedSample === null) {
+        throw new Error('Invalid sample structure');
+      }
+    } catch (e) {
+      throw new Error(`Invalid sample JSON: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+
+    // 부모 모델은 remaining_accounts로 전달되므로 여기서는 Pubkey 해석만 옵션으로 지원
+    const parentPubkey = undefined;
+
+    // creatorPubkey가 없으면 서버 기본값으로 주입(환경변수 등)
+    const creatorPubkeyStr = value.creatorPubkey || process.env.DEFAULT_CREATOR_PUBKEY;
+    if (!creatorPubkeyStr) {
+      throw new Error('creatorPubkey is required (provide in request or set DEFAULT_CREATOR_PUBKEY)');
+    }
+
+    // 허용된 필드만 명시적으로 구성하여 불필요한 입력은 무시
     return {
-      ...value,
-      developerWallet: new PublicKey(value.developerWallet),
+      modelName: value.modelName,
+      uploader: value.uploader,
+      versionName: value.versionName,
+      modality: value.modality,
+      license: value.license,
+      pricing: parsedPricing,
+      walletAddress: new PublicKey(value.walletAddress),
+      releaseDate: value.releaseDate,
+      overview: value.overview,
+      releaseNotes: value.releaseNotes,
+      thumbnail: value.thumbnail,
+      metrics: parsedMetrics,
+      technicalSpecs: parsedTechnicalSpecs,
+      sample: parsedSample,
+      cidRoot: value.cidRoot,
+      encryptionKey: value.encryptionKey,
+      relationship: value.relationship,
+      priceLamports: value.priceLamports,
+      developerWallet: new PublicKey(creatorPubkeyStr),
       parentModelPubkey: parentPubkey,
-      lineageDepth: parentPubkey ? 1 : 0
+      royaltyBps: parseInt(process.env.DEFAULT_ROYALTY_BPS || '250'),
     };
   }
 
@@ -101,44 +176,29 @@ export class TransactionService {
   // 모델 등록 처리 (개발 환경에서만 테스트 키페어 사용)
   async registerModel(request: TransactionRequest): Promise<ApiResponse> {
     try {
-      logger.info('Processing model registration:', { modelId: request.data.modelId });
-
-      // 프로덕션 환경에서는 직접 등록 금지
-      if (process.env.NODE_ENV === 'production') {
-        return {
-          success: false,
-          error: 'Direct model registration is not available in production. Use prepare-register-model endpoint instead.'
-        };
-      }
+      logger.info('Processing model registration:', { modelName: request.data.modelName });
 
       // 요청 데이터 검증
       const modelData = await this.validateModelRegistrationWithNameResolution(request.data);
-
-      // 개발 환경에서만 테스트용 키페어 사용
-      const developerKeypair = this.solanaService.getTestKeypair();
+      // 서버 트레저리 키로 서명/전송
+      const treasuryKeypair = this.solanaService.getTreasuryKeypair();
 
       // 트랜잭션 생성
       const transaction = await this.solanaService.createModelRegistrationTransaction(
         modelData,
-        developerKeypair
+        treasuryKeypair
       );
 
-      // 최근 블록해시 설정
-      const recentBlockhash = await this.solanaService.getRecentBlockhash();
-      transaction.recentBlockhash = recentBlockhash;
-      transaction.feePayer = modelData.developerWallet;
-
-      // 트랜잭션 전송
-      const signature = await this.solanaService.sendTransaction(transaction, [developerKeypair]);
+      // 트랜잭션 전송(트레저리 서명)
+      const signature = await this.solanaService.sendTransaction(transaction, [treasuryKeypair]);
 
       return {
         success: true,
         message: 'Model registration transaction created successfully (development only)',
         data: {
-          modelId: modelData.modelId,
           modelAccountPDA: await this.solanaService.getModelAccountPDA(
             modelData.developerWallet,
-            modelData.modelId
+            modelData.modelName
           ),
           parentModelPDA: modelData.parentModelPubkey ? modelData.parentModelPubkey.toString() : undefined
         },
@@ -156,7 +216,7 @@ export class TransactionService {
   // 모델 등록 미서명 트랜잭션 준비
   async prepareRegisterModelUnsigned(request: TransactionRequest): Promise<ApiResponse> {
     try {
-      logger.info('Preparing unsigned model registration transaction:', { modelId: request.data?.modelId });
+      logger.info('Preparing unsigned model registration transaction:', { modelName: request.data?.modelName });
 
       // 요청 데이터 검증 및 변환
       const modelData = await this.validateModelRegistrationWithNameResolution(request.data);
@@ -179,18 +239,16 @@ export class TransactionService {
 
       const modelAccountPDA = await this.solanaService.getModelAccountPDA(
         modelData.developerWallet,
-        modelData.modelId
+        modelData.modelName
       );
 
       return {
         success: true,
         message: 'Unsigned model registration transaction prepared successfully',
         data: {
-          modelId: modelData.modelId,
           modelAccountPDA: modelAccountPDA.toString(),
           developerWallet: modelData.developerWallet.toString(),
           royaltyBps: modelData.royaltyBps,
-          isAllowed: modelData.isAllowed,
           parentModelPDA: modelData.parentModelPubkey ? modelData.parentModelPubkey.toString() : undefined,
           unsignedTransactionBase64: base64
         },
@@ -374,7 +432,6 @@ export class TransactionService {
           totalDepth: lineageTrace.totalDepth,
           lineage: lineageTrace.lineage.map(l => ({
             modelPDA: l.modelPDA.toString(),
-            modelId: l.modelId,
             modelName: l.modelName,
             developerWallet: l.developerWallet.toString(),
             royaltyBps: l.royaltyBps,
