@@ -38,7 +38,7 @@ export class TransactionService {
       modality: Joi.string().required(),
       license: Joi.string().required(),
       pricing: Joi.string().required(), // JSON 문자열로 받아서 파싱
-      walletAddress: Joi.string().required(),
+      walletAddress: Joi.string().optional(),
       releaseDate: Joi.string().required(),
       overview: Joi.string().required(),
       releaseNotes: Joi.string().required(),
@@ -121,7 +121,8 @@ export class TransactionService {
       modality: value.modality,
       license: value.license,
       pricing: parsedPricing,
-      walletAddress: new PublicKey(value.walletAddress),
+      // walletAddress 미제공 시 creatorPubkey(=developerWallet)로 대체
+      walletAddress: new PublicKey(value.walletAddress || creatorPubkeyStr),
       releaseDate: value.releaseDate,
       overview: value.overview,
       releaseNotes: value.releaseNotes,
