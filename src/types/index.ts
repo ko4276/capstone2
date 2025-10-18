@@ -133,6 +133,22 @@ export interface CustomError extends Error {
   statusCode?: number;
 }
 
+// Anchor 에러 코드 매핑
+export const ANCHOR_ERROR_CODES = {
+  6000: 'ModelInactive',
+  6001: 'Unauthorized', 
+  6002: 'IsNotAllowed',
+  6003: 'OwnerMismatch',
+  6004: 'MaxLineageDepthExceeded',
+  6005: 'StringTooLong',
+  6006: 'InvalidModelData',
+  6007: 'SubscriptionExists',
+  6008: 'InsufficientBalance',
+  6009: 'InvalidPricing',
+  6010: 'ModelNotFound',
+  6011: 'TransactionFailed'
+} as const;
+
 // 환경 변수 타입
 export interface EnvironmentConfig {
   PORT: number;

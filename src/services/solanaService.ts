@@ -293,12 +293,8 @@ export class SolanaService {
       // Anchor 디스크리미네이터 동적 계산 및 Borsh 직렬화로 데이터 구성
       const purchaseSubscriptionDiscriminator = this.getAnchorDiscriminator('purchase_subscription');
 
-      const duration = Buffer.alloc(4);
-      duration.writeUInt32LE(subscriptionData.durationDays, 0);
-
       const instructionData = Buffer.concat([
-        purchaseSubscriptionDiscriminator,
-        duration
+        purchaseSubscriptionDiscriminator
       ]);
 
       const purchaseSubscriptionInstruction = new TransactionInstruction({
@@ -306,6 +302,7 @@ export class SolanaService {
           { pubkey: subscriptionReceiptPDA, isSigner: false, isWritable: true },
           { pubkey: subscriptionData.userWallet, isSigner: true, isWritable: true },
           { pubkey: subscriptionData.modelPubkey, isSigner: false, isWritable: true },
+          { pubkey: this.getTreasuryKeypair().publicKey, isSigner: true, isWritable: true },
           { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
         ],
         programId: this.programId,
