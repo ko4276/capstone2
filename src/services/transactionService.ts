@@ -30,6 +30,31 @@ export class TransactionService {
 
   // 모델 등록 요청 검증
   private async validateModelRegistrationWithNameResolution(data: any): Promise<ModelData> {
+    // 문자열 길이 검증 함수
+    const validateStringLength = (field: string, value: string, maxLength: number) => {
+      if (value && value.length > maxLength) {
+        throw new Error(`${field} too long (max ${maxLength} characters, got ${value.length}): ${value.substring(0, 50)}...`);
+      }
+    };
+
+    // 길이 검증 실행 (lib.rs의 제한과 동일)
+    validateStringLength('modelName', data.modelName, 64);
+    validateStringLength('uploader', data.uploader, 64);
+    validateStringLength('versionName', data.versionName, 64);
+    validateStringLength('modality', data.modality, 32);
+    validateStringLength('license', data.license, 256);
+    validateStringLength('pricing', data.pricing, 1024);
+    validateStringLength('releaseDate', data.releaseDate, 32);
+    validateStringLength('overview', data.overview, 1024);
+    validateStringLength('releaseNotes', data.releaseNotes, 1024);
+    validateStringLength('thumbnail', data.thumbnail, 256);
+    validateStringLength('metrics', data.metrics, 1024);
+    validateStringLength('technicalSpecs', data.technicalSpecs, 1024);
+    validateStringLength('sample', data.sample, 1024);
+    validateStringLength('cidRoot', data.cidRoot, 128);
+    validateStringLength('encryptionKey', data.encryptionKey, 128);
+    validateStringLength('relationship', data.relationship, 64);
+
     const schema = Joi.object({
       // 필수 필드 (modelId 제거)
       modelName: Joi.string().required(),
