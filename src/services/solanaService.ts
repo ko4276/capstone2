@@ -144,12 +144,12 @@ export class SolanaService {
   }
 
   // 모델 계정 PDA 생성 (model_name 기반)
-  async getModelAccountPDA(developerWallet: PublicKey, modelName: string): Promise<PublicKey> {
+  async getModelAccountPDA(creatorPubkey: PublicKey, modelName: string): Promise<PublicKey> {
     const [pda] = await PublicKey.findProgramAddress(
       [
         Buffer.from('model'),
-        // 개발자 서명 제거 후에도 PDA는 개발자(pubkey=creator_pubkey)와 modelId로 결정
-        developerWallet.toBuffer(),
+        // lib.rs와 동일한 시드: creator_pubkey + model_name
+        creatorPubkey.toBuffer(),
         Buffer.from(modelName)
       ],
       this.programId
