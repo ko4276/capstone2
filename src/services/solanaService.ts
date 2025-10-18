@@ -145,15 +145,27 @@ export class SolanaService {
 
   // 모델 계정 PDA 생성 (model_name 기반)
   async getModelAccountPDA(creatorPubkey: PublicKey, modelName: string): Promise<PublicKey> {
-    const [pda] = await PublicKey.findProgramAddress(
-      [
-        Buffer.from('model'),
-        // lib.rs와 동일한 시드: creator_pubkey + model_name
-        creatorPubkey.toBuffer(),
-        Buffer.from(modelName)
-      ],
-      this.programId
-    );
+    const seeds = [
+      Buffer.from('model'),
+      // lib.rs와 동일한 시드: creator_pubkey + model_name
+      creatorPubkey.toBuffer(),
+      Buffer.from(modelName)
+    ];
+    
+    // 디버깅 로그 추가
+    logger.info('PDA 생성 시드:', {
+      creatorPubkey: creatorPubkey.toString(),
+      modelName: modelName,
+      seeds: seeds.map(seed => seed.toString('hex'))
+    });
+    
+    const [pda] = await PublicKey.findProgramAddress(seeds, this.programId);
+    
+    logger.info('생성된 PDA:', {
+      pda: pda.toString(),
+      programId: this.programId.toString()
+    });
+    
     return pda;
   }
 
