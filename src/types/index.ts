@@ -41,7 +41,7 @@ export interface ModelData {
   
   // 선택 필드
   priceLamports?: number;
-  royaltyBps: number;
+  // royaltyBps removed for new smart contract
   parentModelPubkey?: PublicKey;
   developerWallet: PublicKey;
   lineageDepth?: number;
@@ -55,7 +55,7 @@ export interface SubscriptionData {
   durationDays: number;
   expectedPriceLamports: number;
   slippageBps: number;
-  royaltyBps?: number; // overrides model default if provided
+  // royaltyBps removed for new smart contract
   platformFeeBps?: number; // overrides env default if provided
   platformFeeWallet?: PublicKey; // destination for platform fee
   minRoyaltyLamports?: number; // stop cascading when below this
@@ -97,7 +97,7 @@ export interface LineageInfo {
   modelPDA: PublicKey;
   developerWallet: PublicKey;
   modelName: string;
-  royaltyBps: number;
+  // royaltyBps removed for new smart contract
   depth: number;
   parentPDA?: PublicKey;
 }
@@ -121,7 +121,7 @@ export interface RoyaltyDistribution {
     modelName: string;
     depth: number;
     amount: number;
-    royaltyBps: number;
+    // royaltyBps removed for new smart contract
   }[];
   totalLineageAmount: number;
   remainingAmount: number;

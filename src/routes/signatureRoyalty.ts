@@ -101,7 +101,7 @@ router.post('/process-signature-royalty', async (req: Request, res: Response) =>
             modelPDA: l.modelPDA.toString(),
             modelName: l.modelName,
             developerWallet: l.developerWallet.toString(),
-            royaltyBps: l.royaltyBps,
+            // royaltyBps removed for new smart contract
             depth: l.depth,
             parentPDA: l.parentPDA?.toString()
           }))

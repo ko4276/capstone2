@@ -66,7 +66,7 @@ router.post('/register', async (req: Request, res: Response) => {
     const modelData = req.body;
 
     // 필수 필드 검증
-    const requiredFields = ['modelId', 'modelName', 'ipfsCid', 'priceLamports', 'royaltyBps', 'developerWallet'];
+    const requiredFields = ['modelId', 'modelName', 'ipfsCid', 'priceLamports', 'developerWallet'];
     for (const field of requiredFields) {
       if (!modelData[field]) {
         return res.status(400).json({
@@ -101,7 +101,7 @@ router.post('/register', async (req: Request, res: Response) => {
           modelName: modelData.modelName,
           ipfsCid: modelData.ipfsCid,
           priceLamports: modelData.priceLamports,
-          royaltyBps: modelData.royaltyBps,
+          // royaltyBps removed for new smart contract
           developerWallet: modelData.developerWallet,
           isAllowed: modelData.isAllowed ?? true,
           // Optional metadata aligned with api_json_v0.3.json

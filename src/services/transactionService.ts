@@ -162,7 +162,7 @@ export class TransactionService {
       priceLamports: value.priceLamports,
       developerWallet: new PublicKey(creatorPubkeyStr),
       parentModelPubkey: parentPubkey,
-      royaltyBps: parseInt(process.env.DEFAULT_ROYALTY_BPS || '250'),
+      // royaltyBps removed for new smart contract
     };
   }
 
@@ -175,7 +175,7 @@ export class TransactionService {
       durationDays: Joi.number().integer().min(1).max(365).required(),
       expectedPriceLamports: Joi.number().integer().min(0).required(),
       slippageBps: Joi.number().integer().min(0).max(10000).default(50),
-      royaltyBps: Joi.number().integer().min(0).max(10000).optional(),
+      // royaltyBps removed for new smart contract
       platformFeeBps: Joi.number().integer().min(0).max(10000).optional(),
       platformFeeWallet: Joi.string().optional(),
       minRoyaltyLamports: Joi.number().integer().min(0).optional(),
@@ -275,7 +275,7 @@ export class TransactionService {
         data: {
           modelAccountPDA: modelAccountPDA.toString(),
           developerWallet: modelData.developerWallet.toString(),
-          royaltyBps: modelData.royaltyBps,
+          // royaltyBps removed for new smart contract
           parentModelPDA: modelData.parentModelPubkey ? modelData.parentModelPubkey.toString() : undefined,
           unsignedTransactionBase64: base64
         },
@@ -397,7 +397,7 @@ export class TransactionService {
         updates: Joi.object({
           modelName: Joi.string().optional(),
           ipfsCid: Joi.string().optional(),
-          royaltyBps: Joi.number().integer().min(0).max(10000).optional(),
+          // royaltyBps removed for new smart contract
           uploader: Joi.string().optional(),
           versionName: Joi.string().optional(),
           modality: Joi.string().optional(),
@@ -461,7 +461,7 @@ export class TransactionService {
             modelPDA: l.modelPDA.toString(),
             modelName: l.modelName,
             developerWallet: l.developerWallet.toString(),
-            royaltyBps: l.royaltyBps,
+            // royaltyBps removed for new smart contract
             depth: l.depth,
             parentPDA: l.parentPDA?.toString()
           })),

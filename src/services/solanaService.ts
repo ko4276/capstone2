@@ -26,7 +26,7 @@ export class SolanaService {
       process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com',
       'confirmed'
     );
-    this.programId = new PublicKey(process.env.PROGRAM_ID || 'GUrLuMj8yCB2T4NKaJSVqrAWWCMPMf1qtBSnDR8ytYwB');
+    this.programId = new PublicKey(process.env.PROGRAM_ID || 'AiZSvcFJJd6dKzqXvk6QU3PUjyRvMnvB9VpLyLokDxqF');
     this.initializeTestKeypair();
     this.initializeTreasuryKeypair();
   }
@@ -43,6 +43,18 @@ export class SolanaService {
     const len = Buffer.alloc(4);
     len.writeUInt32LE(data.length, 0);
     return Buffer.concat([len, data]);
+  }
+
+  // Option<Pubkey> Borsh 직렬화: 1바이트(Some/None) + 32바이트(Pubkey)
+  private encodeBorshOptionPubkey(pubkey: PublicKey | null): Buffer {
+    if (pubkey) {
+      return Buffer.concat([
+        Buffer.from([1]), // Some
+        pubkey.toBuffer()
+      ]);
+    } else {
+      return Buffer.from([0]); // None
+    }
   }
 
   // 프로덕션 환경에서는 테스트 키페어 사용 금지
@@ -143,27 +155,37 @@ export class SolanaService {
     return this.treasuryKeypair;
   }
 
-  // 모델 계정 PDA 생성 (model_name 기반)
+  // 모델 계정 PDA 생성 (model_name 기반) - Anchor 정확한 방식
   async getModelAccountPDA(creatorPubkey: PublicKey, modelName: string): Promise<PublicKey> {
-    const seeds = [
-      Buffer.from('model'),
-      // lib.rs와 동일한 시드: creator_pubkey + model_name
-      creatorPubkey.toBuffer(),
-      Buffer.from(modelName)
-    ];
+    // lib.rs의 정확한 시드 순서: [b"model", creator_pubkey.as_ref(), model_name.as_bytes()]
     
-    // 디버깅 로그 추가
-    logger.info('PDA 생성 시드:', {
+    // 시드 1: "model" 문자열 (정확히 5바이트)
+    const seed0 = Buffer.from('model', 'utf8');
+    
+    // 시드 2: creator_pubkey (32바이트)
+    const seed1 = creatorPubkey.toBuffer();
+    
+    // 시드 3: model_name (UTF-8 바이트 배열)
+    const seed2 = Buffer.from(modelName, 'utf8');
+    
+    const seeds = [seed0, seed1, seed2];
+    
+    logger.info('PDA 생성 시드 (정확한 Anchor 방식):', {
+      programId: this.programId.toString(),
+      seed0: seed0.toString('hex'),
+      seed1: seed1.toString('hex'),
+      seed2: seed2.toString('hex'),
       creatorPubkey: creatorPubkey.toString(),
-      modelName: modelName,
-      seeds: seeds.map(seed => seed.toString('hex'))
+      modelName: modelName
     });
     
-    const [pda] = await PublicKey.findProgramAddress(seeds, this.programId);
+    // Anchor의 findProgramAddressSync 사용
+    const [pda, bump] = PublicKey.findProgramAddressSync(seeds, this.programId);
     
-    logger.info('생성된 PDA:', {
+    logger.info('생성된 PDA (정확한 Anchor 방식):', {
       pda: pda.toString(),
-      programId: this.programId.toString()
+      bump: bump,
+      expectedPDA: '4uagqxrGxqY1GEJ54ipKvaun3UFCd1JyVYZDHGijmD8H'
     });
     
     return pda;
@@ -205,89 +227,110 @@ export class SolanaService {
   }
 
   // 모델 등록 트랜잭션 생성
-  async createModelRegistrationTransaction(
-    modelData: ModelData,
-    developerKeypair: Keypair
-  ): Promise<Transaction> {
-    try {
-      const treasury = this.getTreasuryKeypair();
-      const modelAccountPDA = await this.getModelAccountPDA(
-        modelData.developerWallet,
-        modelData.modelName
-      );
+  // 모델 등록 트랜잭션 생성
+async createModelRegistrationTransaction(
+  modelData: ModelData,
+  developerKeypair: Keypair
+): Promise<Transaction> {
+  try {
+    const treasury = this.getTreasuryKeypair();
+    const modelAccountPDA = await this.getModelAccountPDA(
+      modelData.developerWallet,
+      modelData.modelName
+    );
 
-      const transaction = new Transaction();
+    const transaction = new Transaction();
 
-      // Anchor 디스크리미네이터 동적 계산 및 Borsh 직렬화로 데이터 구성
-      const createModelDiscriminator = this.getAnchorDiscriminator('create_model');
+    // Anchor 디스크리미네이터 동적 계산 및 Borsh 직렬화로 데이터 구성
+    const createModelDiscriminator = this.getAnchorDiscriminator('create_model');
 
-      const royalty = Buffer.alloc(2);
-      royalty.writeUInt16LE(modelData.royaltyBps, 0);
+    // 새로운 스마트 계약에 맞는 JSON 메타데이터 구조
+    const metadataJson = JSON.stringify({
+      uploader: modelData.uploader,
+      versionName: modelData.versionName,
+      modality: modelData.modality,
+      license: modelData.license,
+      pricing: modelData.pricing,
+      walletAddress: modelData.walletAddress.toString(),
+      releaseDate: modelData.releaseDate,
+      overview: modelData.overview,
+      releaseNotes: modelData.releaseNotes,
+      thumbnail: modelData.thumbnail,
+      metrics: modelData.metrics,
+      technicalSpecs: modelData.technicalSpecs,
+      sample: modelData.sample,
+      cidRoot: modelData.cidRoot,
+      encryptionKey: modelData.encryptionKey,
+      relationship: modelData.relationship
+    });
 
-      // creator_pubkey: 프로그램 서명 제거 설계에 따라 인자로 전달
-      const creatorPubkeyBytes = modelData.developerWallet.toBuffer();
+    // 부모 모델 PDA 처리 (Option<Pubkey>)
+    const parentModelPubkey = modelData.parentModelPubkey || null;
 
-      const instructionData = Buffer.concat([
-        createModelDiscriminator,
-        // model_name 이후 순서로 lib.rs 인자에 정확히 맞춤
-        this.encodeBorshString(modelData.modelName),
-        this.encodeBorshString(modelData.uploader),
-        this.encodeBorshString(modelData.versionName),
-        this.encodeBorshString(modelData.modality),
-        this.encodeBorshString(modelData.license),
-        this.encodeBorshString(JSON.stringify(modelData.pricing)),
-        Buffer.from(modelData.walletAddress.toBuffer()),
-        this.encodeBorshString(modelData.releaseDate),
-        this.encodeBorshString(modelData.overview),
-        this.encodeBorshString(modelData.releaseNotes),
-        this.encodeBorshString(modelData.thumbnail),
-        this.encodeBorshString(JSON.stringify(modelData.metrics)),
-        this.encodeBorshString(JSON.stringify(modelData.technicalSpecs)),
-        this.encodeBorshString(JSON.stringify(modelData.sample)),
-        this.encodeBorshString(modelData.cidRoot),
-        this.encodeBorshString(modelData.encryptionKey),
-        this.encodeBorshString(modelData.relationship),
-        royalty,
-        creatorPubkeyBytes
-      ]);
+    // 새로운 스마트 계약 인스트럭션 데이터 (creator_pubkey 제거)
+    const instructionData = Buffer.concat([
+      createModelDiscriminator,
+      this.encodeBorshString(modelData.modelName),     // model_name: String
+      this.encodeBorshString(metadataJson),          // metadata_json: String
+      this.encodeBorshString(modelData.cidRoot),     // cid_root: String
+      this.encodeBorshOptionPubkey(parentModelPubkey) // parent_model_pubkey: Option<Pubkey>
+    ]);
 
-      const keys = [
-        { pubkey: modelAccountPDA, isSigner: false, isWritable: true },
-        // payer는 트레저리(서버 보유 키)로 변경
-        { pubkey: treasury.publicKey, isSigner: true, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-      ] as { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[];
+    // 새로운 스마트 계약 디버깅 로깅 (creator_pubkey 제거)
+    logger.info('Smart contract instruction data (no creator_pubkey):', {
+      discriminator: Array.from(createModelDiscriminator).map(b => '0x' + b.toString(16).padStart(2, '0')).join(', '),
+      totalLength: instructionData.length,
+      modelName: modelData.modelName,
+      metadataJsonLength: metadataJson.length,
+      cidRoot: modelData.cidRoot,
+      parentModelPubkey: parentModelPubkey?.toString(),
+      creator: modelData.developerWallet.toString(),
+      optionPubkeySerialized: this.encodeBorshOptionPubkey(parentModelPubkey).toString('hex')
+    });
 
-      // 부모 모델 PDA가 제공된 경우, remaining_accounts로 전달되도록 키 배열에 추가 (읽기 전용)
-      if (modelData.parentModelPubkey) {
-        keys.push({ pubkey: modelData.parentModelPubkey, isSigner: false, isWritable: false });
-      }
+    // 새로운 스마트 계약 컨텍스트에 맞는 키 배열
+    const keys = [
+      { pubkey: modelAccountPDA, isSigner: false, isWritable: true }, // model_account
+      { pubkey: modelData.developerWallet, isSigner: true, isWritable: false }, // creator
+      { pubkey: treasury.publicKey, isSigner: true, isWritable: true }, // treasury
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false } // system_program
+    ] as { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[];
 
-      const createModelInstruction = new TransactionInstruction({
-        keys,
-        programId: this.programId,
-        data: instructionData
-      });
-
-      transaction.add(createModelInstruction);
-
-      // 수수료 지불자도 트레저리로 설정 (호출부에서 재설정 가능)
-      const recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
-      transaction.recentBlockhash = recentBlockhash;
-      transaction.feePayer = treasury.publicKey;
-
-      logger.info('Model registration transaction created:', {
-        modelAccountPDA: modelAccountPDA.toString(),
-        instructionDataLength: instructionData.length,
-        discriminator: Array.from(createModelDiscriminator).map(b => '0x' + b.toString(16).padStart(2, '0')).join(', ')
-      });
-
-      return transaction;
-    } catch (error) {
-      logger.error('Failed to create model registration transaction:', error);
-      throw error;
+    // parent_model_account는 항상 포함
+    // parent_model_account는 parentModelPubkey가 있을 때만 포함
+    if (parentModelPubkey) {
+      keys.push({ pubkey: parentModelPubkey, isSigner: false, isWritable: false }); // parent_model_account
     }
+    
+    const createModelInstruction = new TransactionInstruction({
+      keys,
+      programId: this.programId,
+      data: instructionData
+    });
+
+    transaction.add(createModelInstruction);
+
+    // 수수료 지불자도 트레저리로 설정 (호출부에서 재설정 가능)
+    const recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+    transaction.recentBlockhash = recentBlockhash;
+    transaction.feePayer = treasury.publicKey;
+
+    logger.info('Fixed model registration transaction created:', {
+      modelAccountPDA: modelAccountPDA.toString(),
+      parentModelPubkey: parentModelPubkey?.toString(),
+      treasury: treasury.publicKey.toString(),
+      creator: modelData.developerWallet.toString(),
+      instructionDataLength: instructionData.length,
+      keysCount: keys.length,
+      hasParentAccount: !!parentModelPubkey
+    });
+
+    return transaction;
+  } catch (error) {
+    logger.error('Failed to create model registration transaction:', error);
+    throw error;
   }
+}
 
   // 구독 구매 트랜잭션 생성 (계보 기반 로열티 분배)
   async createSubscriptionTransaction(
@@ -386,121 +429,60 @@ export class SolanaService {
   }
 
   // 모델 계정 데이터 디코딩 (Anchor/Borsh) - lib.rs의 ModelAccount 레이아웃과 일치
-  private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
-    try {
-      let offset = 0;
+  // 모델 계정 데이터 디코딩 (Anchor/Borsh) - 새로운 스마트 계약 구조에 맞게 수정
+private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
+  try {
+    let offset = 0;
 
-      // discriminator (8 bytes)
-      offset += 8;
+    // discriminator (8 bytes)
+    offset += 8;
 
-      // creator: Pubkey (LineageInfo의 developerWallet로 매핑)
-      const creator = new PublicKey(accountData.subarray(offset, offset + 32));
+    // creator: Pubkey
+    const creator = new PublicKey(accountData.subarray(offset, offset + 32));
+    offset += 32;
+
+    // model_name: String
+    const modelNameLength = accountData.readUInt32LE(offset);
+    offset += 4;
+    const modelName = accountData.subarray(offset, offset + modelNameLength).toString('utf8');
+    offset += modelNameLength;
+
+    // metadata_json: String (JSON)
+    const metadataJsonLength = accountData.readUInt32LE(offset);
+    offset += 4 + metadataJsonLength;
+
+    // cid_root: String
+    const cidRootLength = accountData.readUInt32LE(offset);
+    offset += 4 + cidRootLength;
+
+    // parent_model_pubkey: Option<Pubkey> (1 byte tag + 32 if Some)
+    const parentTag = accountData.readUInt8(offset);
+    offset += 1;
+    let parentPDA: PublicKey | undefined;
+    if (parentTag === 1) {
+      parentPDA = new PublicKey(accountData.subarray(offset, offset + 32));
       offset += 32;
-
-      // model_name: String
-      const modelNameLength = accountData.readUInt32LE(offset);
-      offset += 4;
-      const modelName = accountData.subarray(offset, offset + modelNameLength).toString('utf8');
-      offset += modelNameLength;
-
-      // uploader: String
-      const uploaderLen = accountData.readUInt32LE(offset);
-      offset += 4 + uploaderLen;
-
-      // version_name: String
-      const versionLen = accountData.readUInt32LE(offset);
-      offset += 4 + versionLen;
-
-      // modality: String
-      const modalityLen = accountData.readUInt32LE(offset);
-      offset += 4 + modalityLen;
-
-      // license: String
-      const licenseLen = accountData.readUInt32LE(offset);
-      offset += 4 + licenseLen;
-
-      // pricing: String
-      const pricingLen = accountData.readUInt32LE(offset);
-      offset += 4 + pricingLen;
-
-      // wallet_address: Pubkey
-      offset += 32;
-
-      // release_date: String
-      const releaseDateLen = accountData.readUInt32LE(offset);
-      offset += 4 + releaseDateLen;
-
-      // overview: String
-      const overviewLen = accountData.readUInt32LE(offset);
-      offset += 4 + overviewLen;
-
-      // release_notes: String
-      const notesLen = accountData.readUInt32LE(offset);
-      offset += 4 + notesLen;
-
-      // thumbnail: String
-      const thumbLen = accountData.readUInt32LE(offset);
-      offset += 4 + thumbLen;
-
-      // metrics: String
-      const metricsLen = accountData.readUInt32LE(offset);
-      offset += 4 + metricsLen;
-
-      // technical_specs: String
-      const specsLen = accountData.readUInt32LE(offset);
-      offset += 4 + specsLen;
-
-      // sample: String
-      const sampleLen = accountData.readUInt32LE(offset);
-      offset += 4 + sampleLen;
-
-      // cid_root: String
-      const cidLen = accountData.readUInt32LE(offset);
-      offset += 4 + cidLen;
-
-      // encryption_key: String
-      const encLen = accountData.readUInt32LE(offset);
-      offset += 4 + encLen;
-
-      // relationship: String
-      const relLen = accountData.readUInt32LE(offset);
-      offset += 4 + relLen;
-
-      // royalty_bps: u16
-      const royaltyBps = accountData.readUInt16LE(offset);
-      offset += 2;
-
-      // created_at: i64
-      // Anchor는 little-endian i64, Node Buffer에는 직접 메서드 없으므로 readBigInt64LE 사용 가능
-      // 하지만 여기서는 오프셋만 이동
-      offset += 8;
-
-      // parent_model_pubkey: Option<Pubkey> (1 byte tag + 32 if Some)
-      const parentTag = accountData.readUInt8(offset);
-      offset += 1;
-      let parentPDA: PublicKey | undefined;
-      if (parentTag === 1) {
-        parentPDA = new PublicKey(accountData.subarray(offset, offset + 32));
-        offset += 32;
-      }
-
-      // lineage_depth: u16
-      const depth = accountData.readUInt16LE(offset);
-      offset += 2;
-
-      return {
-        modelPDA: new PublicKey(''), // 호출부에서 설정
-        developerWallet: creator,
-        modelName,
-        royaltyBps,
-        depth,
-        parentPDA
-      };
-    } catch (error) {
-      logger.error('Failed to decode model account data:', error);
-      return null;
     }
+
+    // lineage_depth: u16
+    const depth = accountData.readUInt16LE(offset);
+    offset += 2;
+
+    // created_at: i64
+    offset += 8;
+
+    return {
+      modelPDA: new PublicKey(''), // 호출부에서 설정
+      developerWallet: creator,
+      modelName,
+      depth,
+      parentPDA
+    };
+  } catch (error) {
+    logger.error('Failed to decode model account data:', error);
+    return null;
   }
+}
 
   // 계보 추적 (루트까지)
   async traceLineage(modelPDA: PublicKey, maxDepth: number = 32): Promise<LineageTrace> {
@@ -582,7 +564,7 @@ export class SolanaService {
     // 계보를 따라 로열티 계산 (부모부터 시작)
     for (let i = lineageTrace.lineage.length - 1; i >= 0; i--) {
       const lineageInfo = lineageTrace.lineage[i];
-      const royaltyAmount = Math.floor(totalLamports * lineageInfo.royaltyBps / 10000);
+      const royaltyAmount = Math.floor(totalLamports * 250 / 10000); // Default 2.5% royalty
       
       // 최소 단위 이하면 중단
       if (royaltyAmount < minRoyaltyLamports) {
@@ -602,7 +584,7 @@ export class SolanaService {
         modelName: lineageInfo.modelName,
         depth: lineageInfo.depth,
         amount: royaltyAmount,
-        royaltyBps: lineageInfo.royaltyBps
+        // royaltyBps removed for new smart contract
       });
 
       totalLineageAmount += royaltyAmount;
@@ -656,12 +638,12 @@ export class SolanaService {
   // 기존 로열티 분배 계산 (하위 호환성)
   calculateRoyaltyDistribution(
     totalLamports: number,
-    royaltyBps: number
+    // royaltyBps removed for new smart contract
   ): RoyaltyDistribution {
     const platformFeeBps = parseInt(process.env.PLATFORM_FEE_BPS || '500');
     
     const platformAmount = Math.floor(totalLamports * platformFeeBps / 10000);
-    const royaltyAmount = Math.floor(totalLamports * royaltyBps / 10000);
+    const royaltyAmount = Math.floor(totalLamports * 250 / 10000); // Default 2.5% royalty
     const developerAmount = totalLamports - platformAmount - royaltyAmount;
 
     return {

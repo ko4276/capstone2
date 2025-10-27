@@ -184,26 +184,30 @@ router.post('/pda', async (req: Request, res: Response) => {
 // 로열티 분배 계산 (기존 방식)
 router.post('/royalty-calculation', async (req: Request, res: Response) => {
   try {
-    const { totalLamports, royaltyBps } = req.body;
+    const { totalLamports } = req.body;
 
-    if (totalLamports === undefined || royaltyBps === undefined) {
+    if (totalLamports === undefined) {
       return res.status(400).json({
         success: false,
-        error: 'Total lamports and royalty BPS are required'
+        error: 'Total lamports is required'
       });
     }
 
-    const distribution = solanaService.calculateRoyaltyDistribution(
-      parseInt(totalLamports),
-      parseInt(royaltyBps)
-    );
+    // Simple distribution without royaltyBps for new smart contract
+    const distribution = {
+      totalLamports: parseInt(totalLamports),
+      platformAmount: Math.floor(parseInt(totalLamports) * 500 / 10000), // 5% platform fee
+      developerAmount: Math.floor(parseInt(totalLamports) * 9500 / 10000), // 95% to developer
+      lineageRoyalties: [],
+      totalLineageAmount: 0,
+      remainingAmount: Math.floor(parseInt(totalLamports) * 9500 / 10000)
+    };
 
     const response: ApiResponse = {
       success: true,
       data: {
         input: {
-          totalLamports: parseInt(totalLamports),
-          royaltyBps: parseInt(royaltyBps)
+          totalLamports: parseInt(totalLamports)
         },
         distribution
       }
@@ -270,7 +274,7 @@ router.post('/lineage-royalty-calculation', async (req: Request, res: Response) 
             modelPDA: l.modelPDA.toString(),
             modelName: l.modelName,
             developerWallet: l.developerWallet.toString(),
-            royaltyBps: l.royaltyBps,
+            // royaltyBps removed for new smart contract
             depth: l.depth,
             parentPDA: l.parentPDA?.toString()
           }))
@@ -319,7 +323,7 @@ router.post('/trace-lineage', async (req: Request, res: Response) => {
             modelPDA: l.modelPDA.toString(),
             modelName: l.modelName,
             developerWallet: l.developerWallet.toString(),
-            royaltyBps: l.royaltyBps,
+            // royaltyBps removed for new smart contract
             depth: l.depth,
             parentPDA: l.parentPDA?.toString()
           }))

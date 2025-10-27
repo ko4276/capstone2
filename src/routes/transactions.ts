@@ -398,7 +398,7 @@ router.post('/purchase-subscription-verify-and-broadcast', async (req: Request, 
         }
 
         // 프로그램 호출 포함 여부(PROGRAM_ID 또는 SystemProgram 존재 체크)
-        const programIdStr = process.env.PROGRAM_ID || 'GUrLuMj8yCB2T4NKaJSVqrAWWCMPMf1qtBSnDR8ytYwB';
+        const programIdStr = process.env.PROGRAM_ID || 'AiZSvcFJJd6dKzqXvk6QU3PUjyRvMnvB9VpLyLokDxqF';
         const programId = new PublicKey(programIdStr);
         const hasProgramInvoke = legacyTx.instructions.some(ix => ix.programId.equals(programId));
         if (!hasProgramInvoke) {
@@ -637,7 +637,7 @@ router.post('/process-signature-royalty', async (req: Request, res: Response) =>
             modelPDA: l.modelPDA.toString(),
             modelName: l.modelName,
             developerWallet: l.developerWallet.toString(),
-            royaltyBps: l.royaltyBps,
+            // royaltyBps removed for new smart contract
             depth: l.depth,
             parentPDA: l.parentPDA?.toString()
           }))
