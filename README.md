@@ -67,7 +67,12 @@ npm start
 - `POST /api/transactions/purchase-subscription` - 구독 구매 트랜잭션
 - `POST /api/transactions/update-model-metadata` - 모델 메타데이터 업데이트 트랜잭션
 - `POST /api/transactions/verify-lineage` - 계보 검증 트랜잭션
+- `POST /api/transactions/treasury/distribute` - 트레저리 분배 (데브넷/테스트)
+- `POST /api/transactions/process-signature-royalty` - 시그니처 기반 로열티 분배
 - `GET /api/transactions/status/:signature` - 트랜잭션 상태 조회
+
+### 시그니처 기반 로열티 (외부 백엔드 통합) ⭐ NEW
+- `POST /api/signature-royalty/process-signature-royalty` - 트랜잭션 시그니처로 자동 로열티 분배
 
 ### 블록체인 유틸리티
 - `GET /api/blockchain/status` - 블록체인 연결 상태 확인
@@ -75,6 +80,8 @@ npm start
 - `GET /api/blockchain/account/:publicKey` - 계정 정보 조회
 - `POST /api/blockchain/pda` - PDA 계산
 - `POST /api/blockchain/royalty-calculation` - 로열티 분배 계산
+- `POST /api/blockchain/lineage-royalty-calculation` - 계보 기반 로열티 계산
+- `POST /api/blockchain/trace-lineage` - 계보 추적
 
 ## 🏗️ 프로젝트 구조
 
@@ -123,6 +130,58 @@ Winston을 사용한 구조화된 로깅:
 ```bash
 npm test
 ```
+
+## 🌟 외부 백엔드 통합: 시그니처 기반 로열티 분배
+
+### 개요
+
+외부 백엔드에서 ComputeBudget 프로그램을 포함한 구독 트랜잭션을 전송한 후, 시그니처만 전송하면 자동으로 로열티를 분배합니다.
+
+### 워크플로우
+
+```
+[외부 백엔드] → 구독 트랜잭션 전송 → [Solana 블록체인]
+                    ↓
+                시그니처 반환
+                    ↓
+[외부 백엔드] → POST /api/signature-royalty/process-signature-royalty
+                    ↓
+[우리 백엔드] → 자동 분석 및 로열티 분배
+```
+
+### 사용 예시
+
+```typescript
+// 1. 외부 백엔드: 구독 트랜잭션 전송
+const signature = await sendSubscriptionTransaction(userWallet, modelPDA, amount);
+
+// 2. 우리 백엔드로 시그니처 전송
+const response = await fetch('https://your-backend/api/signature-royalty/process-signature-royalty', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    transactionSignature: signature,
+    platformFeeBps: 500,        // 선택사항 (기본값 500 = 5%)
+    minRoyaltyLamports: 1000    // 선택사항 (기본값 1000)
+  })
+});
+
+const result = await response.json();
+// 자동으로 계보 추적 및 로열티 분배 완료!
+```
+
+### 주요 기능
+
+- ✅ **ComputeBudget instruction 자동 필터링**
+- ✅ **구독 영수증 PDA 자동 추출**
+- ✅ **모델 PDA 자동 추출**
+- ✅ **전송 금액 자동 추출**
+- ✅ **계보 추적 및 검증**
+- ✅ **로열티 자동 분배**
+
+### 상세 문서
+
+자세한 내용은 [SUBSCRIPTION_ROYALTY_FLOW.md](./SUBSCRIPTION_ROYALTY_FLOW.md)를 참조하세요.
 
 ## 📝 라이선스
 

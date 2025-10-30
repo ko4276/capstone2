@@ -215,15 +215,44 @@ export class SolanaService {
     }
   }
 
-  // 계정 정보 조회
-  async getAccountInfo(publicKey: PublicKey) {
-    try {
-      const accountInfo = await this.connection.getAccountInfo(publicKey);
-      return accountInfo;
-    } catch (error) {
-      logger.error('Failed to get account info:', error);
-      throw error;
+  // 계정 정보 조회 (재시도 로직 포함)
+  async getAccountInfo(publicKey: PublicKey, maxRetries: number = 3, delayMs: number = 2000) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const accountInfo = await this.connection.getAccountInfo(publicKey);
+        if (accountInfo && accountInfo.data) {
+          logger.info('Account info retrieved successfully:', {
+            publicKey: publicKey.toString(),
+            attempt,
+            dataLength: accountInfo.data.length
+          });
+          return accountInfo;
+        } else {
+          logger.warn('Account not found or no data:', {
+            publicKey: publicKey.toString(),
+            attempt,
+            accountInfo: accountInfo ? 'exists but no data' : 'null'
+          });
+          if (attempt < maxRetries) {
+            logger.info(`Retrying in ${delayMs}ms... (attempt ${attempt}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+          }
+        }
+      } catch (error) {
+        logger.error('Failed to get account info:', {
+          publicKey: publicKey.toString(),
+          attempt,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+        if (attempt < maxRetries) {
+          logger.info(`Retrying in ${delayMs}ms... (attempt ${attempt}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        } else {
+          throw error;
+        }
+      }
     }
+    return null;
   }
 
   // 모델 등록 트랜잭션 생성
@@ -289,19 +318,24 @@ async createModelRegistrationTransaction(
     });
 
     // 새로운 스마트 계약 컨텍스트에 맞는 키 배열
+    // 새로운 스마트 계약 컨텍스트에 맞는 키 배열
     const keys = [
       { pubkey: modelAccountPDA, isSigner: false, isWritable: true }, // model_account
-      { pubkey: modelData.developerWallet, isSigner: true, isWritable: false }, // creator
+      { pubkey: modelData.developerWallet, isSigner: false, isWritable: false }, // creator (개발환경에서는 서명하지 않음)
       { pubkey: treasury.publicKey, isSigner: true, isWritable: true }, // treasury
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false } // system_program
-    ] as { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[];
+    ];
 
-    // parent_model_account는 항상 포함
-    // parent_model_account는 parentModelPubkey가 있을 때만 포함
+    // parentModelPubkey가 있으면 parent_model_account 위치에 추가
     if (parentModelPubkey) {
       keys.push({ pubkey: parentModelPubkey, isSigner: false, isWritable: false }); // parent_model_account
+    } else {
+      // parentModelPubkey가 없어도 더미 계정 추가 (스마트계약이 5개 계정을 기대함)
+      keys.push({ pubkey: SystemProgram.programId, isSigner: false, isWritable: false }); // 더미 parent_model_account
     }
-    
+
+    // system_program은 항상 마지막에 추가
+    keys.push({ pubkey: SystemProgram.programId, isSigner: false, isWritable: false }); // system_program
+        
     const createModelInstruction = new TransactionInstruction({
       keys,
       programId: this.programId,
@@ -434,45 +468,91 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
   try {
     let offset = 0;
 
+    logger.info('Starting decodeModelAccountData:', {
+      dataLength: accountData.length,
+      firstBytes: Array.from(accountData.subarray(0, Math.min(50, accountData.length))).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')
+    });
+
     // discriminator (8 bytes)
     offset += 8;
 
-    // creator: Pubkey
-    const creator = new PublicKey(accountData.subarray(offset, offset + 32));
-    offset += 32;
+    // creator: Pubkey (32 bytes)
+    let creator: PublicKey;
+    try {
+      const creatorBytes = accountData.subarray(offset, offset + 32);
+      logger.info('Creator bytes:', {
+        offset,
+        creatorBytes: Array.from(creatorBytes).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')
+      });
+      creator = new PublicKey(creatorBytes);
+      offset += 32;
+      logger.info('Creator created successfully:', { creator: creator.toString() });
+    } catch (error) {
+      logger.error('Failed to create creator PublicKey:', error);
+      logger.error('Creator bytes:', Array.from(accountData.subarray(offset, offset + 32)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+      throw error;
+    }
 
-    // model_name: String
+    // model_name: String (4 bytes length + string)
     const modelNameLength = accountData.readUInt32LE(offset);
     offset += 4;
     const modelName = accountData.subarray(offset, offset + modelNameLength).toString('utf8');
     offset += modelNameLength;
 
-    // metadata_json: String (JSON)
+    // metadata_json: String (4 bytes length + string)
     const metadataJsonLength = accountData.readUInt32LE(offset);
-    offset += 4 + metadataJsonLength;
+    offset += 4;
+    // metadata_json은 사용하지 않으므로 건너뛰기
+    offset += metadataJsonLength;
 
-    // cid_root: String
+    // cid_root: String (4 bytes length + string)
     const cidRootLength = accountData.readUInt32LE(offset);
-    offset += 4 + cidRootLength;
+    offset += 4;
+    // cid_root는 사용하지 않으므로 건너뛰기
+    offset += cidRootLength;
 
     // parent_model_pubkey: Option<Pubkey> (1 byte tag + 32 if Some)
     const parentTag = accountData.readUInt8(offset);
     offset += 1;
     let parentPDA: PublicKey | undefined;
     if (parentTag === 1) {
-      parentPDA = new PublicKey(accountData.subarray(offset, offset + 32));
-      offset += 32;
+      try {
+        const parentBytes = accountData.subarray(offset, offset + 32);
+        logger.info('Parent PDA bytes:', {
+          parentTag,
+          parentBytes: Array.from(parentBytes).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '),
+          offset
+        });
+        parentPDA = new PublicKey(parentBytes);
+        offset += 32;
+      } catch (error) {
+        logger.error('Failed to create parent PDA:', error);
+        logger.error('Parent bytes:', Array.from(accountData.subarray(offset, offset + 32)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        throw error;
+      }
     }
 
-    // lineage_depth: u16
+    // lineage_depth: u16 (2 bytes)
     const depth = accountData.readUInt16LE(offset);
     offset += 2;
 
-    // created_at: i64
+    // created_at: i64 (8 bytes)
     offset += 8;
 
+    logger.info('Decoded model account data:', {
+      creator: creator.toString(),
+      modelName,
+      depth,
+      parentPDA: parentPDA?.toString(),
+      totalOffset: offset,
+      dataLength: accountData.length
+    });
+
+    // 더미 PublicKey 생성 (System Program ID 사용, 나중에 traceLineage에서 실제 값으로 교체됨)
+    const dummyPDA = new PublicKey('11111111111111111111111111111111');
+    
     return {
-      modelPDA: new PublicKey(''), // 호출부에서 설정
+      modelPDA: dummyPDA, // 호출부에서 실제 PDA로 설정됨
       developerWallet: creator,
       modelName,
       depth,
@@ -480,6 +560,8 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
     };
   } catch (error) {
     logger.error('Failed to decode model account data:', error);
+    logger.error('Account data length:', accountData.length);
+    logger.error('Account data (first 100 bytes):', Array.from(accountData.subarray(0, Math.min(100, accountData.length))).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
     return null;
   }
 }
@@ -493,16 +575,36 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
 
     try {
       while (currentPDA && depth < maxDepth) {
+        logger.info('Tracing lineage:', {
+          currentPDA: currentPDA.toString(),
+          depth,
+          maxDepth
+        });
+
         // 모델 계정 정보 조회
         const accountInfo = await this.getAccountInfo(currentPDA);
         if (!accountInfo || !accountInfo.data) {
+          logger.error('Account not found:', {
+            currentPDA: currentPDA.toString(),
+            accountInfo: accountInfo ? 'exists but no data' : 'null'
+          });
           violations.push(`Model account not found: ${currentPDA.toString()}`);
           break;
         }
 
+        logger.info('Account info retrieved:', {
+          currentPDA: currentPDA.toString(),
+          dataLength: accountInfo.data.length,
+          owner: accountInfo.owner?.toString()
+        });
+
         // 계정 데이터 디코딩
         const lineageInfo = this.decodeModelAccountData(accountInfo.data);
         if (!lineageInfo) {
+          logger.error('Failed to decode account data:', {
+            currentPDA: currentPDA.toString(),
+            dataLength: accountInfo.data.length
+          });
           violations.push(`Failed to decode model account: ${currentPDA.toString()}`);
           break;
         }
@@ -513,10 +615,37 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
 
         // 부모 모델로 이동
         if (lineageInfo.parentPDA) {
+          logger.info('Moving to parent model:', {
+            currentPDA: currentPDA.toString(),
+            parentPDA: lineageInfo.parentPDA.toString(),
+            depth: depth + 1
+          });
+          
+          // 부모 모델 계정 정보 미리 조회하여 디버깅
+          try {
+            const parentAccountInfo = await this.getAccountInfo(lineageInfo.parentPDA);
+            logger.info('Parent account info preview:', {
+              parentPDA: lineageInfo.parentPDA.toString(),
+              exists: !!parentAccountInfo,
+              dataLength: parentAccountInfo?.data?.length || 0,
+              owner: parentAccountInfo?.owner?.toString() || 'unknown'
+            });
+          } catch (error) {
+            logger.error('Failed to get parent account info:', {
+              parentPDA: lineageInfo.parentPDA.toString(),
+              error: error instanceof Error ? error.message : 'Unknown error'
+            });
+          }
+          
           currentPDA = lineageInfo.parentPDA;
           depth++;
         } else {
-          // 루트 모델에 도달
+          // 루트 모델에 도달 (parentPDA가 undefined)
+          logger.info('Reached root model (no parent):', {
+            currentPDA: currentPDA.toString(),
+            depth,
+            parentPDA: lineageInfo.parentPDA
+          });
           break;
         }
       }
@@ -819,6 +948,145 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
     }
   }
 
+  // ComputeBudget Program ID (필터링용)
+  private readonly COMPUTE_BUDGET_PROGRAM_ID = 'ComputeBudget111111111111111111111111111111';
+
+  // 트랜잭션에서 구독 영수증 PDA 추출
+  async extractSubscriptionReceiptPDAFromTransaction(transactionInfo: any): Promise<PublicKey | null> {
+    try {
+      if (!transactionInfo || !transactionInfo.transaction) {
+        return null;
+      }
+
+      const transaction = transactionInfo.transaction;
+      const message = transaction.message;
+      let accountKeys: any[] = [];
+      let instructions: any[] = [];
+
+      try {
+        if (typeof message.getAccountKeys === 'function') {
+          accountKeys = message.getAccountKeys();
+        } else if ((message as any).accountKeys) {
+          const accountKeysObj = (message as any).accountKeys;
+          if (accountKeysObj.staticAccountKeys) {
+            accountKeys = accountKeysObj.staticAccountKeys;
+          } else if (Array.isArray(accountKeysObj)) {
+            accountKeys = accountKeysObj;
+          } else {
+            accountKeys = [];
+          }
+        }
+        
+        if ((message as any).instructions) {
+          instructions = (message as any).instructions;
+        }
+      } catch (error) {
+        logger.warn('Failed to get message details for subscription PDA extraction:', error);
+        return null;
+      }
+
+      logger.info('🔍 Extracting Subscription Receipt PDA from transaction:', {
+        instructionsCount: instructions.length,
+        accountKeysCount: accountKeys.length
+      });
+      
+      // 우리 프로그램 호출에서 구독 영수증 PDA 찾기 (ComputeBudget instruction 제외)
+      for (let i = 0; i < instructions.length; i++) {
+        const instruction = instructions[i];
+        if (instruction.programIdIndex !== undefined && 
+            instruction.programIdIndex >= 0 && 
+            instruction.programIdIndex < accountKeys.length) {
+          const programId = accountKeys[instruction.programIdIndex];
+          
+          logger.info(`🔍 Instruction ${i}:`, {
+            programId: programId ? programId.toString() : 'undefined',
+            isOurProgram: programId ? programId.toString() === this.programId.toString() : false,
+            isComputeBudget: programId ? programId.toString() === this.COMPUTE_BUDGET_PROGRAM_ID : false,
+            accountsCount: instruction.accounts?.length || 0
+          });
+          
+          // ComputeBudget instruction 건너뛰기
+          if (programId && programId.toString() === this.COMPUTE_BUDGET_PROGRAM_ID) {
+            logger.info('⏭️  Skipping ComputeBudget instruction');
+            continue;
+          }
+          
+          // 우리 프로그램 ID와 일치하는지 확인
+          if (programId && programId.toString() === this.programId.toString()) {
+            // 구독 트랜잭션의 경우 첫 번째 계정이 subscription_receipt PDA
+            if (instruction.accounts && instruction.accounts.length > 0) {
+              const subscriptionReceiptPDAIndex = instruction.accounts[0];
+              if (subscriptionReceiptPDAIndex !== undefined && subscriptionReceiptPDAIndex < accountKeys.length) {
+                const subscriptionReceiptPDA = new PublicKey(accountKeys[subscriptionReceiptPDAIndex]);
+                logger.info('✅ Found Subscription Receipt PDA:', {
+                  pda: subscriptionReceiptPDA.toString(),
+                  instructionIndex: i
+                });
+                return subscriptionReceiptPDA;
+              }
+            }
+          }
+        }
+      }
+
+      // 로그에서 구독 PDA 찾기
+      if (transactionInfo.meta && transactionInfo.meta.logMessages) {
+        for (const logMessage of transactionInfo.meta.logMessages) {
+          const subscriptionPDAMatch = logMessage.match(/subscription_receipt|Subscription Receipt|receipt: ([A-Za-z0-9]{32,44})/i);
+          if (subscriptionPDAMatch && subscriptionPDAMatch[1]) {
+            try {
+              const pda = new PublicKey(subscriptionPDAMatch[1]);
+              logger.info('✅ Found Subscription Receipt PDA in logs:', pda.toString());
+              return pda;
+            } catch (error) {
+              logger.warn('Invalid subscription PDA in log:', subscriptionPDAMatch[1]);
+            }
+          }
+        }
+      }
+
+      logger.warn('⚠️  No subscription receipt PDA found in transaction');
+      return null;
+    } catch (error) {
+      logger.error('Failed to extract subscription receipt PDA from transaction:', error);
+      return null;
+    }
+  }
+
+  // 구독 영수증 PDA에서 모델 정보 추출
+  async extractModelInfoFromSubscriptionReceipt(subscriptionReceiptPDA: PublicKey): Promise<{ modelPDA: PublicKey, userWallet: PublicKey } | null> {
+    try {
+      const accountInfo = await this.getAccountInfo(subscriptionReceiptPDA);
+      if (!accountInfo) {
+        logger.warn('Subscription receipt account not found:', subscriptionReceiptPDA.toString());
+        return null;
+      }
+
+      // 구독 영수증 계정 데이터 파싱
+      // 구조: discriminator(8) + model_pubkey(32) + user_wallet(32) + ... 
+      const data = accountInfo.data;
+      if (data.length < 72) { // 최소 8 + 32 + 32 바이트
+        logger.warn('Subscription receipt data too short:', data.length);
+        return null;
+      }
+
+      // discriminator 건너뛰고 모델 PDA와 사용자 지갑 추출
+      const modelPDA = new PublicKey(data.slice(8, 40));
+      const userWallet = new PublicKey(data.slice(40, 72));
+
+      logger.info('✅ Extracted model info from subscription receipt:', {
+        subscriptionReceiptPDA: subscriptionReceiptPDA.toString(),
+        modelPDA: modelPDA.toString(),
+        userWallet: userWallet.toString()
+      });
+
+      return { modelPDA, userWallet };
+    } catch (error) {
+      logger.error('Failed to extract model info from subscription receipt:', error);
+      return null;
+    }
+  }
+
   // 트랜잭션에서 모델 PDA 추출 (SPL Token 트랜잭션 포함)
   async extractModelPDAFromTransaction(transactionInfo: any): Promise<PublicKey | null> {
     try {
@@ -853,44 +1121,130 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
         logger.warn('Failed to get message details for PDA extraction:', error);
         return null;
       }
+
+      logger.info('🔍 Extracting Model PDA from transaction:', {
+        instructionsCount: instructions.length,
+        accountKeysCount: accountKeys.length
+      });
       
-      // 1) 먼저 우리 프로그램 호출에서 모델 PDA 찾기
-      for (const instruction of instructions) {
+      // 우리 프로그램 호출에서 모델 PDA 찾기 (ComputeBudget instruction 제외)
+      for (let i = 0; i < instructions.length; i++) {
+        const instruction = instructions[i];
         if (instruction.programIdIndex !== undefined && 
             instruction.programIdIndex >= 0 && 
             instruction.programIdIndex < accountKeys.length) {
           const programId = accountKeys[instruction.programIdIndex];
           
+          logger.info(`🔍 Instruction ${i}:`, {
+            programId: programId ? programId.toString() : 'undefined',
+            isOurProgram: programId ? programId.toString() === this.programId.toString() : false,
+            isComputeBudget: programId ? programId.toString() === this.COMPUTE_BUDGET_PROGRAM_ID : false,
+            accountsCount: instruction.accounts?.length || 0
+          });
+          
+          // ComputeBudget instruction 건너뛰기
+          if (programId && programId.toString() === this.COMPUTE_BUDGET_PROGRAM_ID) {
+            logger.info('⏭️  Skipping ComputeBudget instruction');
+            continue;
+          }
+          
           // 우리 프로그램 ID와 일치하는지 확인
-          if (programId.toString() === this.programId.toString()) {
-            // 첫 번째 계정이 모델 PDA (일반적으로)
-            if (instruction.accounts && instruction.accounts.length > 0) {
-              const modelPDAIndex = instruction.accounts[0];
-              if (modelPDAIndex !== undefined) {
-                return new PublicKey(accountKeys[modelPDAIndex]);
+          if (programId && programId.toString() === this.programId.toString()) {
+            if (instruction.accounts && instruction.accounts.length > 1) {
+              // 구독 instruction의 경우:
+              // accounts[0] = subscription_receipt PDA
+              // accounts[1] = model_account PDA ⭐ 이것이 필요!
+              const modelPDAIndex = instruction.accounts[1];
+              
+              if (modelPDAIndex !== undefined && modelPDAIndex < accountKeys.length) {
+                const modelPDA = new PublicKey(accountKeys[modelPDAIndex]);
+                logger.info('✅ Found Model PDA from subscription instruction:', {
+                  pda: modelPDA.toString(),
+                  instructionIndex: i,
+                  accountIndex: 1,
+                  totalAccounts: instruction.accounts.length
+                });
+                return modelPDA;
+              }
+            } else if (instruction.accounts && instruction.accounts.length > 0) {
+              // 다른 instruction 타입의 경우 첫 번째 계정 시도
+              const firstAccountIndex = instruction.accounts[0];
+              if (firstAccountIndex !== undefined && firstAccountIndex < accountKeys.length) {
+                const firstAccount = new PublicKey(accountKeys[firstAccountIndex]);
+                logger.info('✅ Found potential Model PDA (first account):', {
+                  pda: firstAccount.toString(),
+                  instructionIndex: i,
+                  accountIndex: 0
+                });
+                return firstAccount;
               }
             }
           }
         }
       }
 
-      // 2) SPL Token 트랜잭션의 경우 로그에서 모델 PDA 찾기
+      // 2) Memo 프로그램 로그에서 모델 PDA 추출 (미래 대비)
       if (transactionInfo.meta && transactionInfo.meta.logMessages) {
         for (const logMessage of transactionInfo.meta.logMessages) {
-          // 로그에서 모델 PDA 패턴 찾기 (예: "Model PDA: 29Gpf7JivkwAHdh8SkTkn4omuAwrAWk7K2ukHzZe4U7m")
-          const modelPDAMatch = logMessage.match(/Model PDA: ([A-Za-z0-9]{32,44})/);
+          // Memo 프로그램 로그에서 JSON 추출
+          // 예: "Program log: Memo (len 225): {\"modelPDA\":\"EfP4Mp7n...\", ...}"
+          const memoMatch = logMessage.match(/Program log: Memo \(len \d+\): (.+)/);
+          if (memoMatch) {
+            try {
+              const memoContent = memoMatch[1];
+              // JSON 파싱 시도
+              const memoData = JSON.parse(memoContent);
+              
+              // modelPDA 필드 확인
+              if (memoData.modelPDA && typeof memoData.modelPDA === 'string') {
+                logger.info('✅ Found Model PDA in Memo:', {
+                  modelPDA: memoData.modelPDA,
+                  memoData
+                });
+                return new PublicKey(memoData.modelPDA);
+              }
+              
+              // model_pda 필드 확인 (언더스코어 버전)
+              if (memoData.model_pda && typeof memoData.model_pda === 'string') {
+                logger.info('✅ Found Model PDA in Memo (model_pda):', {
+                  modelPDA: memoData.model_pda,
+                  memoData
+                });
+                return new PublicKey(memoData.model_pda);
+              }
+              
+              // pda 필드 확인 (짧은 버전)
+              if (memoData.pda && typeof memoData.pda === 'string') {
+                logger.info('✅ Found Model PDA in Memo (pda):', {
+                  modelPDA: memoData.pda,
+                  memoData
+                });
+                return new PublicKey(memoData.pda);
+              }
+              
+              logger.info('📝 Memo found but no modelPDA field:', { memoData });
+            } catch (error) {
+              logger.warn('Failed to parse Memo JSON:', { logMessage, error: error instanceof Error ? error.message : 'Unknown error' });
+            }
+          }
+          
+          // 로그에서 직접 모델 PDA 패턴 찾기 (폴백)
+          // 예: "Model PDA: 29Gpf7JivkwAHdh8SkTkn4omuAwrAWk7K2ukHzZe4U7m"
+          const modelPDAMatch = logMessage.match(/Model PDA: ([A-Za-z0-9]{32,44})/i);
           if (modelPDAMatch) {
             try {
+              logger.info('✅ Found Model PDA in log (pattern match):', modelPDAMatch[1]);
               return new PublicKey(modelPDAMatch[1]);
             } catch (error) {
               logger.warn('Invalid model PDA in log:', modelPDAMatch[1]);
             }
           }
           
-          // 또는 다른 패턴으로 모델 PDA 찾기
-          const pdaMatch = logMessage.match(/model_account: ([A-Za-z0-9]{32,44})/);
+          // model_account 패턴으로 모델 PDA 찾기
+          const pdaMatch = logMessage.match(/model_account: ([A-Za-z0-9]{32,44})/i);
           if (pdaMatch) {
             try {
+              logger.info('✅ Found Model PDA in log (model_account):', pdaMatch[1]);
               return new PublicKey(pdaMatch[1]);
             } catch (error) {
               logger.warn('Invalid PDA in log:', pdaMatch[1]);
@@ -979,7 +1333,7 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
         return 0;
       }
 
-      // 모든 인스트럭션을 확인하여 SOL/SPL Token 전송 금액 합계
+      // 모든 인스트럭션을 확인하여 SOL/SPL Token 전송 금액 합계 (ComputeBudget instruction 제외)
       for (let i = 0; i < instructions.length; i++) {
         const instruction = instructions[i];
         if (instruction.programIdIndex !== undefined && 
@@ -992,10 +1346,17 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
             programId: programId ? programId.toString() : 'undefined',
             isSystemProgram: programId ? programId.toString() === SystemProgram.programId.toString() : false,
             isSPLToken: programId ? programId.toString() === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' : false,
+            isComputeBudget: programId ? programId.toString() === this.COMPUTE_BUDGET_PROGRAM_ID : false,
             dataLength: instruction.data?.length || 0,
             accountsCount: instruction.accounts?.length || 0,
             programIdIndex: instruction.programIdIndex
           });
+          
+          // ComputeBudget instruction 건너뛰기
+          if (programId && programId.toString() === this.COMPUTE_BUDGET_PROGRAM_ID) {
+            logger.info('⏭️  Skipping ComputeBudget instruction');
+            continue;
+          }
           
           // SystemProgram.transfer 인스트럭션인지 확인
           if (programId && programId.toString() === SystemProgram.programId.toString()) {

@@ -30,6 +30,76 @@ export class TransactionService {
 
   // 모델 등록 요청 검증
   private async validateModelRegistrationWithNameResolution(data: any): Promise<ModelData> {
+    // 🔄 외부 백엔드 형식 → 내부 형식 자동 변환
+    const normalizedData: any = {};
+    
+    // 1) name → modelName 매핑
+    normalizedData.modelName = data.modelName || data.name;
+    
+    // 2) 필수 필드 매핑
+    normalizedData.uploader = data.uploader;
+    normalizedData.versionName = data.versionName;
+    normalizedData.modality = data.modality;
+    normalizedData.walletAddress = data.walletAddress;
+    normalizedData.releaseDate = data.releaseDate;
+    normalizedData.overview = data.overview;
+    normalizedData.releaseNotes = data.releaseNotes;
+    normalizedData.thumbnail = data.thumbnail;
+    normalizedData.cidRoot = data.cidRoot;
+    normalizedData.encryptionKey = data.encryptionKey;
+    
+    // 3) license: 배열이면 문자열로 변환
+    if (data.license) {
+      normalizedData.license = Array.isArray(data.license) 
+        ? data.license.join(', ') 
+        : data.license;
+    }
+    
+    // 4) 객체 필드들: 이미 문자열이면 그대로, 객체면 JSON.stringify
+    normalizedData.pricing = typeof data.pricing === 'string' 
+      ? data.pricing 
+      : JSON.stringify(data.pricing);
+    
+    normalizedData.metrics = typeof data.metrics === 'string'
+      ? data.metrics
+      : JSON.stringify(data.metrics);
+    
+    normalizedData.technicalSpecs = typeof data.technicalSpecs === 'string'
+      ? data.technicalSpecs
+      : JSON.stringify(data.technicalSpecs);
+    
+    normalizedData.sample = typeof data.sample === 'string'
+      ? data.sample
+      : JSON.stringify(data.sample);
+    
+    // 5) lineage 처리
+    if (data.lineage) {
+      // relationship 추출
+      normalizedData.relationship = data.lineage.relationship || 'derived';
+      
+      // parentModelId는 실제로 부모 모델의 PDA 문자열
+      if (data.lineage.parentModelId) {
+        normalizedData.parentModelPDA = data.lineage.parentModelId;
+        logger.info('✅ Parent model PDA extracted from lineage:', {
+          parentModelId: data.lineage.parentModelId,
+          relationship: normalizedData.relationship
+        });
+      }
+    } else {
+      // lineage 객체가 없으면 직접 필드 사용
+      normalizedData.relationship = data.relationship || 'original';
+      normalizedData.parentModelPDA = data.parentModelPDA;
+    }
+    
+    // 6) 선택 필드
+    normalizedData.priceLamports = data.priceLamports;
+    normalizedData.creatorPubkey = data.creatorPubkey;
+    
+    logger.info('🔄 Normalized external data:', {
+      original: Object.keys(data),
+      normalized: Object.keys(normalizedData)
+    });
+    
     // 문자열 길이 검증 함수
     const validateStringLength = (field: string, value: string, maxLength: number) => {
       if (value && value.length > maxLength) {
@@ -37,40 +107,40 @@ export class TransactionService {
       }
     };
 
-    // 길이 검증 실행 (lib.rs의 제한과 동일)
-    validateStringLength('modelName', data.modelName, 64);
-    validateStringLength('uploader', data.uploader, 64);
-    validateStringLength('versionName', data.versionName, 64);
-    validateStringLength('modality', data.modality, 32);
-    validateStringLength('license', data.license, 256);
-    validateStringLength('pricing', data.pricing, 1024);
-    validateStringLength('releaseDate', data.releaseDate, 32);
-    validateStringLength('overview', data.overview, 1024);
-    validateStringLength('releaseNotes', data.releaseNotes, 1024);
-    validateStringLength('thumbnail', data.thumbnail, 256);
-    validateStringLength('metrics', data.metrics, 1024);
-    validateStringLength('technicalSpecs', data.technicalSpecs, 1024);
-    validateStringLength('sample', data.sample, 1024);
-    validateStringLength('cidRoot', data.cidRoot, 128);
-    validateStringLength('encryptionKey', data.encryptionKey, 128);
-    validateStringLength('relationship', data.relationship, 64);
+    // 길이 검증 실행 (lib.rs의 제한과 동일) - normalizedData 사용
+    validateStringLength('modelName', normalizedData.modelName, 64);
+    validateStringLength('uploader', normalizedData.uploader, 64);
+    validateStringLength('versionName', normalizedData.versionName, 64);
+    validateStringLength('modality', normalizedData.modality, 32);
+    validateStringLength('license', normalizedData.license, 256);
+    validateStringLength('pricing', normalizedData.pricing, 1024);
+    validateStringLength('releaseDate', normalizedData.releaseDate, 32);
+    validateStringLength('overview', normalizedData.overview, 1024);
+    validateStringLength('releaseNotes', normalizedData.releaseNotes, 1024);
+    validateStringLength('thumbnail', normalizedData.thumbnail, 256);
+    validateStringLength('metrics', normalizedData.metrics, 1024);
+    validateStringLength('technicalSpecs', normalizedData.technicalSpecs, 1024);
+    validateStringLength('sample', normalizedData.sample, 1024);
+    validateStringLength('cidRoot', normalizedData.cidRoot, 128);
+    validateStringLength('encryptionKey', normalizedData.encryptionKey, 128);
+    validateStringLength('relationship', normalizedData.relationship, 64);
 
     const schema = Joi.object({
-      // 필수 필드 (modelId 제거)
+      // 필수 필드
       modelName: Joi.string().required(),
       uploader: Joi.string().required(),
       versionName: Joi.string().required(),
       modality: Joi.string().required(),
       license: Joi.string().required(),
-      pricing: Joi.string().required(), // JSON 문자열로 받아서 파싱
+      pricing: Joi.string().required(), // JSON 문자열 (자동 변환됨)
       walletAddress: Joi.string().optional(),
       releaseDate: Joi.string().required(),
       overview: Joi.string().required(),
       releaseNotes: Joi.string().required(),
       thumbnail: Joi.string().required(),
-      metrics: Joi.string().required(), // JSON 문자열로 받아서 파싱
-      technicalSpecs: Joi.string().required(), // JSON 문자열로 받아서 파싱
-      sample: Joi.string().required(), // JSON 문자열로 받아서 파싱
+      metrics: Joi.string().required(), // JSON 문자열 (자동 변환됨)
+      technicalSpecs: Joi.string().required(), // JSON 문자열 (자동 변환됨)
+      sample: Joi.string().required(), // JSON 문자열 (자동 변환됨)
       cidRoot: Joi.string().required(),
       encryptionKey: Joi.string().required(),
       relationship: Joi.string().required(),
@@ -78,11 +148,10 @@ export class TransactionService {
       // 선택 필드
       priceLamports: Joi.number().integer().min(0).optional(),
       parentModelPDA: Joi.string().optional(),
-      // 개발자 서명 제거: 외부에서 전달받은 개발자 주소(옵션). 없으면 서버가 주입
       creatorPubkey: Joi.string().optional()
     }).options({ allowUnknown: true, stripUnknown: true });
 
-    const { error, value } = schema.validate(data);
+    const { error, value } = schema.validate(normalizedData);
     if (error) {
       throw new Error(`Validation error: ${error.details[0].message}`);
     }
