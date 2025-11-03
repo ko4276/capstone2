@@ -95,23 +95,7 @@ router.post('/register', async (req: Request, res: Response) => {
       success: true,
       message: 'Model registration data prepared successfully',
       data: {
-        modelId: modelData.modelId,
         modelAccountPDA: modelAccountPDA.toString(),
-        modelData: {
-          modelName: modelData.modelName,
-          ipfsCid: modelData.ipfsCid,
-          // priceLamports removed - price info is in pricing/metadata_json
-          // royaltyBps removed for new smart contract
-          developerWallet: modelData.developerWallet,
-          isAllowed: modelData.isAllowed ?? true,
-          // Optional metadata aligned with api_json_v0.3.json
-          uploader: modelData.uploader,
-          versionName: modelData.versionName,
-          modality: modelData.modality,
-          thumbnail: modelData.thumbnail,
-          pricing: modelData.pricing,
-          metrics: modelData.metrics
-        }
       }
     };
 
