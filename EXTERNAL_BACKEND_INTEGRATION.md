@@ -29,7 +29,7 @@ import {
 // 설정
 const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
 const PROGRAM_ID = new PublicKey('AiZSvcFJJd6dKzqXvk6QU3PUjyRvMnvB9VpLyLokDxqF');
-const BACKEND_API = 'https://your-solana-backend.com';
+const BACKEND_API = 'https://35.216.87.44.sslip.io';
 
 // 구독 트랜잭션 전송 함수
 async function sendSubscriptionTransaction(
@@ -85,7 +85,7 @@ async function sendSubscriptionTransaction(
 ```typescript
 async function processRoyaltyDistribution(transactionSignature: string) {
   try {
-    const response = await fetch(`${BACKEND_API}/api/signature-royalty/process-signature-royalty`, {
+    const response = await fetch(`${BACKEND_API}/api/transactions/process-signature-royalty`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
