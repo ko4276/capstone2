@@ -44,11 +44,27 @@ router.post('/process-signature-royalty', async (req: Request, res: Response) =>
       totalSOL: totalLamports / LAMPORTS_PER_SOL
     });
 
-    // 3) 트랜잭션에서 모델 PDA 추출 (첫 번째 프로그램 호출에서)
+    // 3) 트랜잭션에서 모델 PDA 추출 (Memo에서)
     const modelPDA = await solanaService.extractModelPDAFromTransaction(transactionInfo);
+    
+    // modelPDA가 없으면 전송 확인만 반환
     if (!modelPDA) {
-      return res.status(400).json({ success: false, error: 'Could not extract model PDA from transaction' });
+      logger.info('No modelPDA found in transaction - returning transfer info only');
+      return res.json({
+        success: true,
+        message: 'SOL transfer confirmed - no modelPDA found for royalty distribution',
+        data: {
+          transactionSignature: value.transactionSignature,
+          totalLamports: totalLamports,
+          totalSOL: totalLamports / LAMPORTS_PER_SOL,
+          modelPDAFound: false
+        }
+      });
     }
+    
+    logger.info('Model PDA found - proceeding with royalty distribution:', {
+      modelPDA: modelPDA.toString()
+    });
 
     // 4) 계보 추적
     const lineageTrace = await solanaService.traceLineage(modelPDA, 32);

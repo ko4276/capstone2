@@ -950,6 +950,9 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
 
   // ComputeBudget Program ID (필터링용)
   private readonly COMPUTE_BUDGET_PROGRAM_ID = 'ComputeBudget111111111111111111111111111111';
+  
+  // Memo Program ID (메타데이터 추출용)
+  private readonly MEMO_PROGRAM_ID = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 
   // 트랜잭션에서 구독 영수증 PDA 추출
   async extractSubscriptionReceiptPDAFromTransaction(transactionInfo: any): Promise<PublicKey | null> {
@@ -965,10 +968,22 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
 
       try {
         if (typeof message.getAccountKeys === 'function') {
-          accountKeys = message.getAccountKeys();
+          const result = message.getAccountKeys();
+          
+          // getAccountKeys()가 배열을 반환하는 경우
+          if (Array.isArray(result)) {
+            accountKeys = result;
+          }
+          // getAccountKeys()가 {staticAccountKeys: [...]} 객체를 반환하는 경우
+          else if ((result as any)?.staticAccountKeys && Array.isArray((result as any).staticAccountKeys)) {
+            accountKeys = (result as any).staticAccountKeys;
+          }
+          else {
+            accountKeys = [];
+          }
         } else if ((message as any).accountKeys) {
           const accountKeysObj = (message as any).accountKeys;
-          if (accountKeysObj.staticAccountKeys) {
+          if (accountKeysObj.staticAccountKeys && Array.isArray(accountKeysObj.staticAccountKeys)) {
             accountKeys = accountKeysObj.staticAccountKeys;
           } else if (Array.isArray(accountKeysObj)) {
             accountKeys = accountKeysObj;
@@ -1101,11 +1116,23 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
 
       try {
         if (typeof message.getAccountKeys === 'function') {
-          accountKeys = message.getAccountKeys();
+          const result = message.getAccountKeys();
+          
+          // getAccountKeys()가 배열을 반환하는 경우
+          if (Array.isArray(result)) {
+            accountKeys = result;
+          }
+          // getAccountKeys()가 {staticAccountKeys: [...]} 객체를 반환하는 경우
+          else if ((result as any)?.staticAccountKeys && Array.isArray((result as any).staticAccountKeys)) {
+            accountKeys = (result as any).staticAccountKeys;
+          }
+          else {
+            accountKeys = [];
+          }
         } else if ((message as any).accountKeys) {
           const accountKeysObj = (message as any).accountKeys;
           // VersionedTransaction의 경우 staticAccountKeys 속성을 가질 수 있음
-          if (accountKeysObj.staticAccountKeys) {
+          if (accountKeysObj.staticAccountKeys && Array.isArray(accountKeysObj.staticAccountKeys)) {
             accountKeys = accountKeysObj.staticAccountKeys;
           } else if (Array.isArray(accountKeysObj)) {
             accountKeys = accountKeysObj;
@@ -1124,10 +1151,11 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
 
       logger.info('🔍 Extracting Model PDA from transaction:', {
         instructionsCount: instructions.length,
-        accountKeysCount: accountKeys.length
+        accountKeysCount: accountKeys.length,
+        accountKeysIsArray: Array.isArray(accountKeys)
       });
       
-      // 우리 프로그램 호출에서 모델 PDA 찾기 (ComputeBudget instruction 제외)
+      // 1) Memo Program instruction에서 모델 PDA 추출 (최우선)
       for (let i = 0; i < instructions.length; i++) {
         const instruction = instructions[i];
         if (instruction.programIdIndex !== undefined && 
@@ -1137,9 +1165,9 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
           
           logger.info(`🔍 Instruction ${i}:`, {
             programId: programId ? programId.toString() : 'undefined',
-            isOurProgram: programId ? programId.toString() === this.programId.toString() : false,
+            isMemoProgram: programId ? programId.toString() === this.MEMO_PROGRAM_ID : false,
             isComputeBudget: programId ? programId.toString() === this.COMPUTE_BUDGET_PROGRAM_ID : false,
-            accountsCount: instruction.accounts?.length || 0
+            hasData: !!instruction.data
           });
           
           // ComputeBudget instruction 건너뛰기
@@ -1148,7 +1176,67 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
             continue;
           }
           
-          // 우리 프로그램 ID와 일치하는지 확인
+          // Memo Program instruction 찾기
+          if (programId && programId.toString() === this.MEMO_PROGRAM_ID) {
+            logger.info('📝 Found Memo Program instruction, extracting data...');
+            
+            try {
+              // instruction.data는 base58 인코딩된 문자열
+              let memoDataStr: string;
+              
+              if (typeof instruction.data === 'string') {
+                // base58 디코딩
+                const bs58 = require('bs58');
+                const decoded = bs58.decode(instruction.data);
+                memoDataStr = Buffer.from(decoded).toString('utf8');
+              } else if (Buffer.isBuffer(instruction.data)) {
+                memoDataStr = instruction.data.toString('utf8');
+              } else if (Array.isArray(instruction.data)) {
+                memoDataStr = Buffer.from(instruction.data).toString('utf8');
+              } else {
+                logger.warn('Unknown instruction data format:', typeof instruction.data);
+                continue;
+              }
+              
+              logger.info('📝 Memo data decoded:', { memoDataStr });
+              
+              // JSON 파싱 시도
+              const memoData = JSON.parse(memoDataStr);
+              
+              // modelPDA 필드 확인
+              if (memoData.modelPDA && typeof memoData.modelPDA === 'string') {
+                logger.info('✅ Found Model PDA in Memo instruction:', {
+                  modelPDA: memoData.modelPDA,
+                  memoData
+                });
+                return new PublicKey(memoData.modelPDA);
+              }
+              
+              // model_pda 필드 확인 (언더스코어 버전)
+              if (memoData.model_pda && typeof memoData.model_pda === 'string') {
+                logger.info('✅ Found Model PDA in Memo instruction (model_pda):', {
+                  modelPDA: memoData.model_pda,
+                  memoData
+                });
+                return new PublicKey(memoData.model_pda);
+              }
+              
+              // pda 필드 확인 (짧은 버전)
+              if (memoData.pda && typeof memoData.pda === 'string') {
+                logger.info('✅ Found Model PDA in Memo instruction (pda):', {
+                  modelPDA: memoData.pda,
+                  memoData
+                });
+                return new PublicKey(memoData.pda);
+              }
+              
+              logger.warn('⚠️  Memo data found but no modelPDA field:', { memoData });
+            } catch (error) {
+              logger.error('Failed to parse Memo instruction data:', error);
+            }
+          }
+          
+          // 우리 프로그램 ID와 일치하는지 확인 (백업 방법)
           if (programId && programId.toString() === this.programId.toString()) {
             if (instruction.accounts && instruction.accounts.length > 1) {
               // 구독 instruction의 경우:
@@ -1297,16 +1385,47 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
 
       try {
         if (typeof message.getAccountKeys === 'function') {
-          accountKeys = message.getAccountKeys();
+          const result = message.getAccountKeys();
+          logger.info('🔍 getAccountKeys() returned:', {
+            isArray: Array.isArray(result),
+            type: typeof result,
+            hasStaticAccountKeys: !!(result as any)?.staticAccountKeys,
+            staticAccountKeysIsArray: Array.isArray((result as any)?.staticAccountKeys)
+          });
+          
+          // getAccountKeys()가 배열을 반환하는 경우
+          if (Array.isArray(result)) {
+            accountKeys = result;
+            logger.info('✅ getAccountKeys() returned array', { count: accountKeys.length });
+          }
+          // getAccountKeys()가 {staticAccountKeys: [...]} 객체를 반환하는 경우
+          else if ((result as any)?.staticAccountKeys && Array.isArray((result as any).staticAccountKeys)) {
+            accountKeys = (result as any).staticAccountKeys;
+            logger.info('✅ Extracted staticAccountKeys from getAccountKeys() result', { count: accountKeys.length });
+          }
+          else {
+            logger.warn('⚠️  getAccountKeys() returned unexpected format');
+            accountKeys = [];
+          }
         } else if ((message as any).accountKeys) {
           const accountKeysObj = (message as any).accountKeys;
+          logger.info('🔍 accountKeysObj structure:', {
+            hasStaticAccountKeys: !!accountKeysObj.staticAccountKeys,
+            isArray: Array.isArray(accountKeysObj),
+            staticAccountKeysIsArray: Array.isArray(accountKeysObj.staticAccountKeys),
+            staticAccountKeysLength: accountKeysObj.staticAccountKeys?.length
+          });
+          
           // VersionedTransaction의 경우 staticAccountKeys 속성을 가질 수 있음
-          if (accountKeysObj.staticAccountKeys) {
+          if (accountKeysObj.staticAccountKeys && Array.isArray(accountKeysObj.staticAccountKeys)) {
             accountKeys = accountKeysObj.staticAccountKeys;
+            logger.info('✅ Extracted staticAccountKeys as array', { count: accountKeys.length });
           } else if (Array.isArray(accountKeysObj)) {
             accountKeys = accountKeysObj;
+            logger.info('✅ accountKeysObj is already an array', { count: accountKeys.length });
           } else {
             accountKeys = [];
+            logger.warn('⚠️  accountKeys is neither array nor has staticAccountKeys');
           }
         }
         
@@ -1360,39 +1479,81 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
           
           // SystemProgram.transfer 인스트럭션인지 확인
           if (programId && programId.toString() === SystemProgram.programId.toString()) {
-            // SystemProgram.transfer의 데이터 길이는 4바이트 (discriminator) + 8바이트 (lamports)
-            if (instruction.data && instruction.data.length >= 12) {
-              // lamports 값 추출 (8바이트 little-endian)
-              const lamportsData = instruction.data.slice(4, 12);
-              const lamports = lamportsData.readBigUInt64LE(0);
-              totalTransferred += Number(lamports);
+            try {
+              let dataBuffer: Buffer;
               
-              logger.info(`🔍 DEBUG - SystemProgram Transfer Found:`, {
-                lamports: Number(lamports),
-                sol: Number(lamports) / LAMPORTS_PER_SOL
-              });
+              // instruction.data를 Buffer로 변환
+              if (Buffer.isBuffer(instruction.data)) {
+                dataBuffer = instruction.data;
+              } else if (typeof instruction.data === 'string') {
+                // base58 디코딩
+                const bs58 = require('bs58');
+                dataBuffer = Buffer.from(bs58.decode(instruction.data));
+              } else if (Array.isArray(instruction.data)) {
+                dataBuffer = Buffer.from(instruction.data);
+              } else {
+                logger.warn('Unknown instruction.data format:', typeof instruction.data);
+                continue;
+              }
+              
+              // SystemProgram.transfer의 데이터 길이는 4바이트 (discriminator) + 8바이트 (lamports)
+              if (dataBuffer.length >= 12) {
+                // lamports 값 추출 (8바이트 little-endian)
+                const lamportsData = dataBuffer.slice(4, 12);
+                const lamports = lamportsData.readBigUInt64LE(0);
+                totalTransferred += Number(lamports);
+                
+                logger.info(`🔍 DEBUG - SystemProgram Transfer Found:`, {
+                  lamports: Number(lamports),
+                  sol: Number(lamports) / LAMPORTS_PER_SOL,
+                  dataType: typeof instruction.data,
+                  isBuffer: Buffer.isBuffer(instruction.data)
+                });
+              }
+            } catch (error) {
+              logger.error('Failed to parse SystemProgram transfer data:', error);
             }
           }
           
           // SPL Token Program 인스트럭션인지 확인
           else if (programId && programId.toString() === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') {
-            // SPL Token transfer 인스트럭션 (discriminator: 3)
-            if (instruction.data && instruction.data.length >= 1) {
-              const discriminator = instruction.data[0];
-              if (discriminator === 3) { // Transfer instruction
-                // SPL Token transfer에서 amount는 8바이트 little-endian
-                if (instruction.data.length >= 9) {
-                  const amountData = instruction.data.slice(1, 9);
-                  const amount = amountData.readBigUInt64LE(0);
-                  // SPL Token은 보통 6자리 소수점을 사용하므로 SOL로 변환
-                  totalTransferred += Number(amount) / 1000000; // 1 SOL = 1,000,000 micro-SOL
-                  
-                  logger.info(`🔍 DEBUG - SPL Token Transfer Found:`, {
-                    amount: Number(amount),
-                    convertedSOL: Number(amount) / 1000000
-                  });
+            try {
+              let dataBuffer: Buffer;
+              
+              // instruction.data를 Buffer로 변환
+              if (Buffer.isBuffer(instruction.data)) {
+                dataBuffer = instruction.data;
+              } else if (typeof instruction.data === 'string') {
+                // base58 디코딩
+                const bs58 = require('bs58');
+                dataBuffer = Buffer.from(bs58.decode(instruction.data));
+              } else if (Array.isArray(instruction.data)) {
+                dataBuffer = Buffer.from(instruction.data);
+              } else {
+                logger.warn('Unknown SPL Token instruction.data format:', typeof instruction.data);
+                continue;
+              }
+              
+              // SPL Token transfer 인스트럭션 (discriminator: 3)
+              if (dataBuffer.length >= 1) {
+                const discriminator = dataBuffer[0];
+                if (discriminator === 3) { // Transfer instruction
+                  // SPL Token transfer에서 amount는 8바이트 little-endian
+                  if (dataBuffer.length >= 9) {
+                    const amountData = dataBuffer.slice(1, 9);
+                    const amount = amountData.readBigUInt64LE(0);
+                    // SPL Token은 보통 6자리 소수점을 사용하므로 SOL로 변환
+                    totalTransferred += Number(amount) / 1000000; // 1 SOL = 1,000,000 micro-SOL
+                    
+                    logger.info(`🔍 DEBUG - SPL Token Transfer Found:`, {
+                      amount: Number(amount),
+                      convertedSOL: Number(amount) / 1000000
+                    });
+                  }
                 }
               }
+            } catch (error) {
+              logger.error('Failed to parse SPL Token transfer data:', error);
             }
           }
         }

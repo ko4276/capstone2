@@ -559,10 +559,18 @@ router.post('/process-signature-royalty', async (req: Request, res: Response) =>
         testMode: value.testMode || false
       });
       
-      if (!modelPDA && !value.testMode) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Could not extract model PDA from transaction. Provide modelPDA in request or use testMode=true' 
+      // modelPDA가 없으면 전송 확인만 반환
+      if (!modelPDA) {
+        logger.info('No modelPDA found in transaction - returning transfer info only');
+        return res.json({
+          success: true,
+          message: 'SOL transfer confirmed - no modelPDA found for royalty distribution',
+          data: {
+            transactionSignature: value.transactionSignature,
+            totalLamports: totalLamports,
+            totalSOL: totalLamports / LAMPORTS_PER_SOL,
+            modelPDAFound: false
+          }
         });
       }
     }
