@@ -11,7 +11,7 @@ router.post('/process-signature-royalty', async (req: Request, res: Response) =>
   try {
     const schema = Joi.object({
       transactionSignature: Joi.string().required(),
-      modelPDA: Joi.string().required(),
+      modelPDA: Joi.string().optional(),
       platformFeeBps: Joi.number().integer().min(0).max(10000).optional(),
       minRoyaltyLamports: Joi.number().integer().min(0).optional(),
       commitment: Joi.string().valid('processed', 'confirmed', 'finalized').optional()
@@ -24,20 +24,22 @@ router.post('/process-signature-royalty', async (req: Request, res: Response) =>
 
     logger.info('Processing signature-based royalty distribution:', {
       transactionSignature: value.transactionSignature,
-      modelPDA: value.modelPDA
+      modelPDA: value.modelPDA || 'NOT PROVIDED'
     });
 
-    // 1) PublicKey 변환 및 검증
+    // 1) PublicKey 변환 및 검증 (modelPDA가 제공된 경우만)
     const { PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
-    let modelPDA: typeof PublicKey.prototype;
+    let modelPDA: typeof PublicKey.prototype | undefined;
     
-    try {
-      modelPDA = new PublicKey(value.modelPDA);
-    } catch (error) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid modelPDA format' 
-      });
+    if (value.modelPDA) {
+      try {
+        modelPDA = new PublicKey(value.modelPDA);
+      } catch (error) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid modelPDA format' 
+        });
+      }
     }
 
     // 2) 트랜잭션 정보 조회 및 검증
@@ -86,26 +88,56 @@ router.post('/process-signature-royalty', async (req: Request, res: Response) =>
       });
     }
 
-    // 3-1) 최소 금액 검증
-    const MIN_SUBSCRIPTION_LAMPORTS = 1000000; // 0.001 SOL
-    if (totalLamports < MIN_SUBSCRIPTION_LAMPORTS) {
-      logger.error('Transaction amount too small:', {
-        signature: value.transactionSignature,
-        totalLamports,
-        minRequired: MIN_SUBSCRIPTION_LAMPORTS
-      });
-      return res.status(400).json({ 
-        success: false, 
-        error: `Transaction amount too small: ${totalLamports} lamports (minimum: ${MIN_SUBSCRIPTION_LAMPORTS})` 
-      });
-    }
-
     logger.info('Transaction validated and amount extracted:', {
       signature: value.transactionSignature,
       totalLamports,
       totalSOL: totalLamports / LAMPORTS_PER_SOL,
       blockTime: transactionInfo.blockTime ? new Date(transactionInfo.blockTime * 1000).toISOString() : 'unknown'
     });
+    
+    // 3-1) modelPDA가 없으면 람포트 확인만 하고 종료
+    if (!modelPDA) {
+      logger.warn('No modelPDA provided - lamports verified but royalty distribution skipped:', {
+        signature: value.transactionSignature,
+        totalLamports,
+        totalSOL: totalLamports / LAMPORTS_PER_SOL
+      });
+      
+      return res.json({
+        success: false,
+        message: 'Lamports transfer verified, but royalty distribution failed due to missing modelPDA',
+        data: {
+          transactionVerified: true,
+          lamportsTransferred: totalLamports,
+          totalSOL: totalLamports / LAMPORTS_PER_SOL,
+          royaltyDistributed: false,
+          reason: 'modelPDA not provided in request'
+        }
+      });
+    }
+
+    // 3-2) 최소 금액 검증 (로열티 분배 시에만 체크)
+    const MIN_SUBSCRIPTION_LAMPORTS = 1000000; // 0.001 SOL
+    if (totalLamports < MIN_SUBSCRIPTION_LAMPORTS) {
+      logger.warn('Lamports transfer verified but amount too small for royalty distribution:', {
+        signature: value.transactionSignature,
+        totalLamports,
+        minRequired: MIN_SUBSCRIPTION_LAMPORTS
+      });
+      return res.json({ 
+        success: false, 
+        message: 'Lamports transfer verified, but amount too small for royalty distribution',
+        data: {
+          transactionVerified: true,
+          lamportsTransferred: totalLamports,
+          totalSOL: totalLamports / LAMPORTS_PER_SOL,
+          minRequiredLamports: MIN_SUBSCRIPTION_LAMPORTS,
+          minRequiredSOL: MIN_SUBSCRIPTION_LAMPORTS / LAMPORTS_PER_SOL,
+          royaltyDistributed: false,
+          reason: `Amount too small: ${totalLamports} lamports (minimum: ${MIN_SUBSCRIPTION_LAMPORTS} lamports = ${MIN_SUBSCRIPTION_LAMPORTS / LAMPORTS_PER_SOL} SOL)`
+        }
+      });
+    }
     
     logger.info('Model PDA received from external backend - proceeding with royalty distribution:', {
       modelPDA: modelPDA.toString()
