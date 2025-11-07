@@ -138,16 +138,24 @@ Content-Type: application/json
 ### 4. 시그니처 기반 로열티 분배 🔥
 
 ```bash
-POST https://35.216.87.44.sslip.io/api/transactions/process-signature-royalty
+POST https://35.216.87.44.sslip.io/api/signature-royalty/process-signature-royalty
 Content-Type: application/json
 ```
 
 **요청 본문:**
 ```json
 {
-  "signature": "5LzM8x9yJ3kP4vN2wQ1fR6tG8hU7iS5dC3aE4bF2gH1j..."
+  "transactionSignature": "5LzM8x9yJ3kP4vN2wQ1fR6tG8hU7iS5dC3aE4bF2gH1j...",
+  "modelPDA": "4xUJxzf1K46e8Xd4ixp47rEzQQUPTNQ4ku9ksv4EM8kc"
 }
 ```
+
+**요청 파라미터:**
+- `transactionSignature` (필수): Solana 트랜잭션 시그니처
+- `modelPDA` (필수): 구독한 모델의 PDA 주소
+- `platformFeeBps` (선택): 플랫폼 수수료 (기본값: 500 = 5%)
+- `minRoyaltyLamports` (선택): 최소 로열티 금액 (기본값: 1000)
+- `commitment` (선택): 트랜잭션 확인 레벨 (processed/confirmed/finalized)
 
 **응답 예시:**
 ```json
@@ -305,10 +313,11 @@ curl -X POST https://35.216.87.44.sslip.io/api/transactions/register-model \
 
 #### 4. 로열티 분배
 ```bash
-curl -X POST https://35.216.87.44.sslip.io/api/transactions/process-signature-royalty \
+curl -X POST https://35.216.87.44.sslip.io/api/signature-royalty/process-signature-royalty \
   -H "Content-Type: application/json" \
   -d '{
-    "signature": "YOUR_TRANSACTION_SIGNATURE"
+    "transactionSignature": "YOUR_TRANSACTION_SIGNATURE",
+    "modelPDA": "4xUJxzf1K46e8Xd4ixp47rEzQQUPTNQ4ku9ksv4EM8kc"
   }'
 ```
 
@@ -347,8 +356,9 @@ import axios from 'axios';
 const BASE_URL = 'https://35.216.87.44.sslip.io';
 
 // 로열티 분배
-const { data } = await axios.post(`${BASE_URL}/api/transactions/process-signature-royalty`, {
-  signature: 'YOUR_SIGNATURE'
+const { data } = await axios.post(`${BASE_URL}/api/signature-royalty/process-signature-royalty`, {
+  transactionSignature: 'YOUR_TRANSACTION_SIGNATURE',
+  modelPDA: '4xUJxzf1K46e8Xd4ixp47rEzQQUPTNQ4ku9ksv4EM8kc'
 });
 
 console.log('Distribution:', data.data.distribution);

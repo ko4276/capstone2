@@ -57,15 +57,13 @@ router.post('/process', async (req: Request, res: Response) => {
   }
 });
 
-// 모델 등록 트랜잭션 (주석처리 - 메타데이터 직접 전송 방식 사용)
-/*
+// 모델 등록 트랜잭션
 router.post('/register-model', async (req: Request, res: Response) => {
   try {
     const transactionRequest: TransactionRequest = {
       type: 'register_model',
       data: req.body
     };
-
     const result = await transactionService.processTransaction(transactionRequest);
     res.json(result);
   } catch (error) {
@@ -76,7 +74,6 @@ router.post('/register-model', async (req: Request, res: Response) => {
     });
   }
 });
-*/
 
 // 모델 등록 미서명 트랜잭션 준비 (주석처리 - 메타데이터 직접 전송 방식 사용)
 /*

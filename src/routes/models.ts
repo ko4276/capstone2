@@ -1,11 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { SolanaService } from '../services/solanaService';
+import { TransactionService } from '../services/transactionService';
 import { logger } from '../utils/logger';
 import { ApiResponse } from '../types';
 
 const router = Router();
 const solanaService = new SolanaService();
-
+const transactionService = new TransactionService();
 // 모델 정보 조회 (modelName 기반 PDA)
 router.get('/:modelName', async (req: Request, res: Response) => {
   try {
@@ -60,46 +61,17 @@ router.get('/:modelName', async (req: Request, res: Response) => {
   }
 });
 
-// 모델 등록
+// 모델 등록 (온체인 등록 포함)
 router.post('/register', async (req: Request, res: Response) => {
   try {
-    const modelData = req.body;
-
-    // 필수 필드 검증
-    const requiredFields = ['modelId', 'modelName', 'ipfsCid', 'developerWallet'];
-    for (const field of requiredFields) {
-      if (!modelData[field]) {
-        return res.status(400).json({
-          success: false,
-          error: `Missing required field: ${field}`
-        });
-      }
-    }
-
-    // 모델 계정 PDA 계산
-    const modelAccountPDA = await solanaService.getModelAccountPDA(
-      new (await import('@solana/web3.js')).PublicKey(modelData.developerWallet),
-      modelData.modelId
-    );
-
-    // 이미 존재하는지 확인
-    const existingAccount = await solanaService.getAccountInfo(modelAccountPDA);
-    if (existingAccount) {
-      return res.status(409).json({
-        success: false,
-        error: 'Model already exists'
-      });
-    }
-
-    const response: ApiResponse = {
-      success: true,
-      message: 'Model registration data prepared successfully',
-      data: {
-        modelAccountPDA: modelAccountPDA.toString(),
-      }
+    const transactionRequest = {
+      type: 'register_model' as const,
+      data: req.body
     };
-
-    res.json(response);
+    
+    const result = await transactionService.processTransaction(transactionRequest);
+    
+    res.json(result);
   } catch (error) {
     logger.error('Failed to register model:', error);
     res.status(500).json({
