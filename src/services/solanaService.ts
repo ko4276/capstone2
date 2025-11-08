@@ -719,7 +719,12 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
     modelPDA: PublicKey,
     developerWallet: PublicKey,
     options?: { platformFeeBps?: number; minRoyaltyLamports?: number; commitment?: Commitment }
-  ): Promise<{ signature: string; distribution: ReturnType<SolanaService['calculateLineageRoyaltyDistribution']> }> {
+  ): Promise<{ 
+    signature: string; 
+    distribution: ReturnType<SolanaService['calculateLineageRoyaltyDistribution']>;
+    lineageTransfers: Array<{ recipient: string; amount: number; signature: string; modelName: string; depth: number }>;
+    developerTransfer?: { recipient: string; amount: number; signature: string };
+  }> {
     const treasury = this.getTreasuryKeypair();
     // 계보 추적 및 분배 계산
     const lineageTrace = await this.traceLineage(modelPDA);
@@ -727,24 +732,82 @@ private decodeModelAccountData(accountData: Buffer): LineageInfo | null {
     const minRoyaltyLamports = options?.minRoyaltyLamports ?? parseInt(process.env.MIN_ROYALTY_LAMPORTS || '1000');
     const distribution = this.calculateLineageRoyaltyDistribution(totalLamports, lineageTrace, platformFeeBps, minRoyaltyLamports);
 
-    // 트랜잭션 구성: 트레저리 -> 각 수취인 전송 (플랫폼 몫은 남김)
-    const tx = new Transaction();
-
+    const lineageTransfers: Array<{ recipient: string; amount: number; signature: string; modelName: string; depth: number }> = [];
+    
+    // 각 부모 모델 개발자에게 개별 트랜잭션으로 전송
     for (const lr of distribution.lineageRoyalties) {
       if (lr.amount > 0) {
-        tx.add(SystemProgram.transfer({ fromPubkey: treasury.publicKey, toPubkey: lr.developerWallet, lamports: lr.amount }));
+        const tx = new Transaction();
+        tx.add(SystemProgram.transfer({ 
+          fromPubkey: treasury.publicKey, 
+          toPubkey: lr.developerWallet, 
+          lamports: lr.amount 
+        }));
+        
+        const recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+        tx.recentBlockhash = recentBlockhash;
+        tx.feePayer = treasury.publicKey;
+        
+        const signature = await this.sendTransaction(tx, [treasury]);
+        
+        lineageTransfers.push({
+          recipient: lr.developerWallet.toString(),
+          amount: lr.amount,
+          signature: signature,
+          modelName: lr.modelName,
+          depth: lr.depth
+        });
+        
+        logger.info('Lineage royalty transferred:', {
+          recipient: lr.developerWallet.toString(),
+          modelName: lr.modelName,
+          depth: lr.depth,
+          amount: lr.amount,
+          signature
+        });
       }
     }
+    
+    // 현재 모델 개발자에게 전송
+    let developerTransfer: { recipient: string; amount: number; signature: string } | undefined;
     if (distribution.developerAmount > 0) {
-      tx.add(SystemProgram.transfer({ fromPubkey: treasury.publicKey, toPubkey: developerWallet, lamports: distribution.developerAmount }));
+      const tx = new Transaction();
+      tx.add(SystemProgram.transfer({ 
+        fromPubkey: treasury.publicKey, 
+        toPubkey: developerWallet, 
+        lamports: distribution.developerAmount 
+      }));
+      
+      const recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+      tx.recentBlockhash = recentBlockhash;
+      tx.feePayer = treasury.publicKey;
+      
+      const signature = await this.sendTransaction(tx, [treasury]);
+      
+      developerTransfer = {
+        recipient: developerWallet.toString(),
+        amount: distribution.developerAmount,
+        signature: signature
+      };
+      
+      logger.info('Developer amount transferred:', {
+        recipient: developerWallet.toString(),
+        amount: distribution.developerAmount,
+        signature
+      });
     }
-
-    const recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
-    tx.recentBlockhash = recentBlockhash;
-    tx.feePayer = treasury.publicKey;
-
-    const signature = await this.sendTransaction(tx, [treasury]);
-    return { signature, distribution };
+    
+    // 메인 signature는 첫 번째 transfer 또는 developer transfer의 signature
+    const mainSignature = lineageTransfers.length > 0 
+      ? lineageTransfers[0].signature 
+      : (developerTransfer?.signature || '');
+    
+    return { 
+      signature: mainSignature, 
+      distribution,
+      lineageTransfers,
+      developerTransfer
+    };
   }
 
   // 기존 로열티 분배 계산 (하위 호환성)

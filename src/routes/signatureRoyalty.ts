@@ -170,7 +170,12 @@ router.post('/process-signature-royalty', async (req: Request, res: Response) =>
       return res.status(400).json({ success: false, error: 'No developer wallet found in lineage' });
     }
 
-    const { signature: distributionSignature, distribution: actualDistribution } = await solanaService.distributeFromTreasury(
+    const { 
+      signature: distributionSignature, 
+      distribution: actualDistribution,
+      lineageTransfers,
+      developerTransfer
+    } = await solanaService.distributeFromTreasury(
       totalLamports,
       modelPDA,
       developerWallet,
@@ -202,7 +207,23 @@ router.post('/process-signature-royalty', async (req: Request, res: Response) =>
         distribution: actualDistribution,
         distributionTransaction: {
           signature: distributionSignature
-        }
+        },
+        // 각 부모 모델 개발자에게 전송한 개별 트랜잭션 정보
+        lineageTransfers: lineageTransfers.map(lt => ({
+          recipient: lt.recipient,
+          amount: lt.amount,
+          amountSOL: lt.amount / LAMPORTS_PER_SOL,
+          signature: lt.signature,
+          modelName: lt.modelName,
+          depth: lt.depth
+        })),
+        // 현재 모델 개발자에게 전송한 트랜잭션 정보
+        developerTransfer: developerTransfer ? {
+          recipient: developerTransfer.recipient,
+          amount: developerTransfer.amount,
+          amountSOL: developerTransfer.amount / LAMPORTS_PER_SOL,
+          signature: developerTransfer.signature
+        } : undefined
       }
     });
   } catch (error) {

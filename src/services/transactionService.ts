@@ -28,11 +28,11 @@ export class TransactionService {
     }
   }
 
-  // 모델 등록 요청 검증 (새 스마트 계약 구조에 맞게 단순화)
+  // 모델 등록 요청 검증 (새 스마트 계약 구조에 맞게 - 핵심 필드만 저장)
   private async validateModelRegistrationWithNameResolution(data: any): Promise<ModelData> {
     // 🔄 외부 백엔드는 기존처럼 모든 필드를 보내지만, 백엔드가 자동으로 metadata_json으로 변환
     
-    // 1) 필수 핵심 필드 추출
+    // 1) 필수 핵심 필드 추출 (온체인에 별도로 저장)
     const modelName = data.modelName || data.name;
     const cidRoot = data.cidRoot;
     const walletAddress = data.walletAddress;
@@ -45,17 +45,24 @@ export class TransactionService {
       parentModelPDA = data.parentModelPDA;
     }
     
-    // 3) 나머지 모든 필드를 metadata_json에 포함
-    const metadataFields: any = {};
+    // 3) metadata_json에 저장할 필드만 선택 (lib.rs 구조에 맞춤)
+    const metadataFields: any = {
+      uploader: data.uploader,
+      versionName: data.versionName,
+      modality: data.modality,
+      license: data.license,
+      releaseDate: data.releaseDate,
+      overview: data.overview,
+      encryptionKey: data.encryptionKey,
+      relationship: data.relationship || (parentModelPDA ? 'derived' : 'root')
+    };
     
-    // 외부 백엔드에서 온 모든 필드를 metadata에 추가 (핵심 필드 제외)
-    const excludeFields = ['name', 'modelName', 'cidRoot', 'walletAddress', 'parentModelPDA', 'lineage', 'creatorPubkey', 'priceLamports'];
-    
-    for (const [key, value] of Object.entries(data)) {
-      if (!excludeFields.includes(key) && value !== undefined && value !== null) {
-        metadataFields[key] = value;
+    // undefined/null 제거
+    Object.keys(metadataFields).forEach(key => {
+      if (metadataFields[key] === undefined || metadataFields[key] === null) {
+        delete metadataFields[key];
       }
-    }
+    });
     
     // 4) metadata_json 생성 및 크기 검증 (최대 4096자)
     const metadataJson = JSON.stringify(metadataFields);
@@ -103,12 +110,12 @@ export class TransactionService {
       modelName: value.modelName,
       cidRoot: value.cidRoot,
       metadataSize: metadataJson.length,
+      metadataFields: Object.keys(metadataFields),
       hasParent: !!parentPubkey,
       walletAddress: value.walletAddress
     });
     
     // 8) ModelData 반환 (새 스마트 계약 구조에 맞게)
-    // 기존 ModelData 타입과 호환성을 위해 빈 값들을 제공
     return {
       modelName: value.modelName,
       cidRoot: value.cidRoot,
@@ -116,24 +123,26 @@ export class TransactionService {
       developerWallet: new PublicKey(creatorPubkeyStr),
       parentModelPubkey: parentPubkey,
       
-      // metadata_json에 포함될 필드들 (실제로는 metadataJson 문자열로 변환됨)
+      // metadata_json에 포함될 필드들
       metadataJson: value.metadataJson,
       
-      // 하위 호환성을 위한 빈 필드들 (실제로는 사용 안됨)
-      uploader: metadataFields.uploader || '',
-      versionName: metadataFields.versionName || '',
-      modality: metadataFields.modality || '',
-      license: metadataFields.license || '',
-      pricing: metadataFields.pricing || {},
-      releaseDate: metadataFields.releaseDate || '',
-      overview: metadataFields.overview || '',
-      releaseNotes: metadataFields.releaseNotes || '',
-      thumbnail: metadataFields.thumbnail || '',
-      metrics: metadataFields.metrics || {},
-      technicalSpecs: metadataFields.technicalSpecs || {},
-      sample: metadataFields.sample || {},
-      encryptionKey: metadataFields.encryptionKey || '',
-      relationship: metadataFields.relationship || (parentPubkey ? 'derived' : 'root'),
+      // 하위 호환성을 위한 필드들 (metadata에서 추출)
+      uploader: metadataFields.uploader,
+      versionName: metadataFields.versionName,
+      modality: metadataFields.modality,
+      license: metadataFields.license,
+      releaseDate: metadataFields.releaseDate,
+      overview: metadataFields.overview,
+      encryptionKey: metadataFields.encryptionKey,
+      relationship: metadataFields.relationship,
+      
+      // 사용하지 않는 필드들 (선택적)
+      pricing: data.pricing,
+      releaseNotes: data.releaseNotes,
+      thumbnail: data.thumbnail,
+      metrics: data.metrics,
+      technicalSpecs: data.technicalSpecs,
+      sample: data.sample,
       priceLamports: value.priceLamports
     };
   }
