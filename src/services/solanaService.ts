@@ -273,25 +273,8 @@ async createModelRegistrationTransaction(
     // Anchor 디스크리미네이터 동적 계산 및 Borsh 직렬화로 데이터 구성
     const createModelDiscriminator = this.getAnchorDiscriminator('create_model');
 
-    // 새로운 스마트 계약에 맞는 JSON 메타데이터 구조
-    const metadataJson = JSON.stringify({
-      uploader: modelData.uploader,
-      versionName: modelData.versionName,
-      modality: modelData.modality,
-      license: modelData.license,
-      pricing: modelData.pricing,
-      walletAddress: modelData.walletAddress.toString(),
-      releaseDate: modelData.releaseDate,
-      overview: modelData.overview,
-      releaseNotes: modelData.releaseNotes,
-      thumbnail: modelData.thumbnail,
-      metrics: modelData.metrics,
-      technicalSpecs: modelData.technicalSpecs,
-      sample: modelData.sample,
-      cidRoot: modelData.cidRoot,
-      encryptionKey: modelData.encryptionKey,
-      relationship: modelData.relationship
-    });
+    // metadataJson 사용 (이미 검증 단계에서 생성됨)
+    const metadataJson = modelData.metadataJson || JSON.stringify({});
 
     // 부모 모델 PDA 처리 (Option<Pubkey>)
     const parentModelPubkey = modelData.parentModelPubkey || null;

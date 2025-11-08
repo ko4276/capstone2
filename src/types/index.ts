@@ -20,31 +20,35 @@ export interface ModelPricing {
 export type ModelMetrics = Record<string, number>; // flexible to fit different modalities
 
 export interface ModelData {
-  // 필수 필드
+  // 필수 핵심 필드 (새 스마트 계약 구조)
   modelName: string;
-  uploader: string;
-  versionName: string;
-  modality: string; // e.g., 'LLM' | 'image-generation' | 'multimodal' | 'audio'
-  license: string;
-  pricing: ModelPricing; // JSON 파싱된 객체
-  walletAddress: PublicKey;
-  releaseDate: string;
-  overview: string;
-  releaseNotes: string;
-  thumbnail: string;
-  metrics: ModelMetrics; // JSON 파싱된 객체
-  technicalSpecs: Record<string, any>; // JSON 파싱된 객체
-  sample: Record<string, any>; // JSON 파싱된 객체
   cidRoot: string;
-  encryptionKey: string;
-  relationship: string;
+  walletAddress: PublicKey;
+  developerWallet: PublicKey;
+  
+  // metadata_json (새 스마트 계약에서 사용)
+  metadataJson?: string;
   
   // 선택 필드
   priceLamports?: number;
-  // royaltyBps removed for new smart contract
   parentModelPubkey?: PublicKey;
-  developerWallet: PublicKey;
   lineageDepth?: number;
+  
+  // 하위 호환성을 위한 필드들 (metadata_json에서 추출)
+  uploader?: string;
+  versionName?: string;
+  modality?: string;
+  license?: string;
+  pricing?: ModelPricing;
+  releaseDate?: string;
+  overview?: string;
+  releaseNotes?: string;
+  thumbnail?: string;
+  metrics?: ModelMetrics;
+  technicalSpecs?: Record<string, any>;
+  sample?: Record<string, any>;
+  encryptionKey?: string;
+  relationship?: string;
 }
 
 // 구독 관련 타입
